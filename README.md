@@ -36,7 +36,7 @@
 
 
 # 克隆项目
-git clone https://github.com/yourname/StockMonitor.git
+git clone https://github.com/ArcandEmily/StockMonitor.git
 cd StockMonitor
 
 # 创建虚拟环境（推荐）
