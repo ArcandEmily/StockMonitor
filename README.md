@@ -148,20 +148,35 @@ python server.py
 
 StockMonitor/
 ├── server.py             # Flask Web 后端（主推）
+
 ├── dashboard.html        # 动态前端页面
+
 ├── main.py               # 命令行调度入口
+
 ├── gui.py                # Tkinter GUI 桌面版
+
 ├── config.py             # .env 配置读取
+
 ├── fetcher.py            # akshare 数据抓取
+
 ├── indicators.py         # 技术指标计算
+
 ├── analysis.py           # 支撑压力位识别（三种方法）
+
 ├── ai_advisor.py         # Prompt 构建 + DeepSeek API 调用
+
 ├── decision.py           # 规则引擎 + 综合决策
+
 ├── scheduler.py          # 定时调度逻辑
+
 ├── logger_setup.py       # 日志配置（loguru）
+
 ├── requirements.txt      # 依赖清单
+
 ├── .env.example          # 配置模板
+
 ├── build.bat             # 打包 EXE 脚本
+
 └── logs/                 # 运行时自动生成日志目录
 
 
