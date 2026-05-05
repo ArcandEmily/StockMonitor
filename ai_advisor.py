@@ -266,23 +266,22 @@ class AIAdvisor:
 
         # 尝试找 JSON 对象
         match = re.search(r"\{.*\}", clean, re.DOTALL)
-if match:
-    candidate = match.group(1)
-    # 如果以逗号结尾，去掉末尾逗号并补上 }
-    if candidate.rstrip().endswith(','):
-        candidate = candidate.rstrip()[:-1] + '}'
-    # 如果明显不完整（最后不是 }），尝试补全
-    if not candidate.strip().endswith('}'):
-        # 尝试补全闭合
-        candidate = candidate + '}'
-    try:
-        return json.loads(candidate)
-    except json.JSONDecodeError:
-        # 最后手段：只提取 decision 字段
-        dec_match = re.search(r'"decision"\s*:\s*"([^"]+)"', candidate)
-        if dec_match:
-            return {"decision": dec_match.group(1), "summary": "AI 回复被截断", "raw": candidate}
-            
+        if match:
+            candidate = match.group(0)
+            # 如果以逗号结尾，去掉末尾逗号并补上 }
+            if candidate.rstrip().endswith(','):
+                candidate = candidate.rstrip()[:-1] + '}'
+            # 如果明显不完整（最后不是 }），尝试补全
+            if not candidate.strip().endswith('}'):
+                candidate = candidate + '}'
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                # 最后手段：只提取 decision 字段
+                dec_match = re.search(r'"decision"\s*:\s*"([^"]+)"', candidate)
+                if dec_match:
+                    return {"decision": dec_match.group(1), "summary": "AI 回复被截断", "raw": candidate}
+
         # 最后：从文本提取关键词
         logger.warning(f"AI 回复无法解析为 JSON，原文：{raw[:200]}")
         decision = "观望"
@@ -291,7 +290,6 @@ if match:
                 decision = kw
                 break
         return {"decision": decision, "summary": raw[:300], "raw": raw}
-
 
 # ────────────────────────────────────────────────────────────────
 #  工具函数
