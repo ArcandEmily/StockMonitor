@@ -203,7 +203,7 @@ body {
 .comm-content { flex: 1; overflow-y: auto; padding: 18px 26px; display: flex; flex-direction: column; gap: 14px; }
 
 /* 品种网格 */
-.comm-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; }
+.comm-grid { display: grid; grid-template-columns: repeat(5,1fr); gap: 10px; }
 .comm-card {
   background: var(--bg-card); border: 1px solid var(--border);
   border-radius: 10px; padding: 14px 16px;
@@ -213,10 +213,25 @@ body {
 .comm-card.selected { border-color: rgba(230,57,124,0.4); background: rgba(230,57,124,0.04); }
 .cc-cat { font-size: 9px; letter-spacing: 1.5px; color: var(--t3); text-transform: uppercase; margin-bottom: 6px; }
 .cc-name { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
-.cc-price { font-family: 'JetBrains Mono', monospace; font-size: 18px; font-weight: 500; margin-bottom: 3px; }
+.cc-price { font-family: 'JetBrains Mono', monospace; font-size: 17px; font-weight: 500; margin-bottom: 3px; }
 .cc-unit { font-size: 10px; color: var(--t3); }
 .cc-change { font-family: 'JetBrains Mono', monospace; font-size: 11px; margin-top: 5px; }
 .cc-source { font-size: 9px; color: var(--t3); margin-top: 4px; }
+
+/* 分类筛选 Tab */
+.cat-filter {
+  display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px;
+}
+.cat-btn {
+  font-size: 10px; padding: 3px 11px; border-radius: 20px; cursor: pointer;
+  border: 1px solid var(--border); color: var(--t3);
+  transition: all 0.15s; user-select: none;
+}
+.cat-btn:hover { color: var(--t1); border-color: var(--border-b); }
+.cat-btn.active {
+  color: #fff; border-color: transparent;
+  background: var(--pink);
+}
 
 /* 分析区：左侧商品详情 + 右侧 AI */
 .comm-analysis-row { display: grid; grid-template-columns: 1fr 1.4fr; gap: 14px; }
@@ -407,6 +422,7 @@ body {
       <!-- 品种行情网格 -->
       <div class="card">
         <div class="card-title">实时行情 · 点击查看产业分析</div>
+        <div class="cat-filter" id="catFilter"></div>
         <div class="comm-grid" id="commGrid">
           <div class="skeleton sk-big" style="height:90px;border-radius:10px"></div>
           <div class="skeleton sk-big" style="height:90px;border-radius:10px"></div>
@@ -719,6 +735,7 @@ async function loadCommodities() {
     const d = await r.json();
     if(d.ok && d.commodities.length>0) {
       COMMODITIES = d.commodities;
+      renderCatFilter();
       renderCommGrid();
       updateTicker();
     }
@@ -756,11 +773,31 @@ async function refreshCommodities() {
   } catch(e) { console.error(e); }
 }
 
+let _activeCat = '全部';
+
+function renderCatFilter() {
+  const cats = ['全部', '能源', '贵金属', '工业金属', '农产品', '外汇', '黑色系'];
+  document.getElementById('catFilter').innerHTML = cats.map(cat => `
+    <div class="cat-btn ${_activeCat===cat?'active':''}" onclick="setCat('${cat}')">${cat}</div>
+  `).join('');
+}
+
+function setCat(cat) {
+  _activeCat = cat;
+  renderCatFilter();
+  renderCommGrid();
+}
+
 function renderCommGrid() {
-  const catColors = {'能源':'#E72D48','贵金属':'#bd832c','工业金属':'#91CFD5','农产品':'#6CA984','黑色系':'#F9B800'};
-  const srcCls    = s => s==='wallstreetcn'?'src-wsn':s==='Yahoo'?'src-yahoo':s==='EastMoney'?'src-em':'src-fb';
-  const srcLabel  = s => s==='wallstreetcn'?'华尔街见闻':s==='Yahoo'?'Yahoo Finance':s==='EastMoney'?'东方财富':'备用数据';
-  document.getElementById('commGrid').innerHTML = COMMODITIES.map(c=>`
+  const catColors = {
+    '能源':'#E72D48', '贵金属':'#bd832c', '工业金属':'#91CFD5',
+    '农产品':'#6CA984', '黑色系':'#F9B800', '外汇':'#7B68EE',
+  };
+  const srcCls    = s => s==='wallstreetcn'?'src-wsn':s==='Yahoo'?'src-yahoo':s==='akshare'?'src-em':'src-fb';
+  const srcLabel  = s => s==='wallstreetcn'?'华尔街见闻':s==='Yahoo'?'Yahoo':s==='akshare'?'akshare':'备用数据';
+  const filtered  = _activeCat === '全部' ? COMMODITIES : COMMODITIES.filter(c => c.category === _activeCat);
+  document.getElementById('commGrid').innerHTML = filtered.length
+    ? filtered.map(c=>`
     <div class="comm-card ${selComm===c.code?'selected':''}" onclick="selectComm('${c.code}')">
       <div class="cc-cat" style="color:${catColors[c.category]||'var(--t3)'}">${c.category}</div>
       <div class="cc-name">${c.name}</div>
@@ -768,7 +805,8 @@ function renderCommGrid() {
       <div class="cc-unit">${c.unit}</div>
       <div class="cc-change ${c.change_pct>=0?'pos':'neg'}">${sign(c.change_pct)}${fmt(c.change_pct,2)}%</div>
       <div class="cc-source ${srcCls(c.source)}">${srcLabel(c.source)}</div>
-    </div>`).join('');
+    </div>`).join('')
+    : '<div style="color:var(--t3);font-size:12px;padding:20px">该分类暂无数据</div>';
 }
 
 function selectComm(code) {
@@ -780,16 +818,20 @@ function selectComm(code) {
 }
 
 function renderCommDetail(c) {
-  const trendColor = c.change_pct>0.5?'var(--green)':c.change_pct<-0.5?'var(--red)':'var(--blue)';
-  const srcLabel = c.source==='wallstreetcn'?'华尔街见闻 ✦':c.source==='Yahoo'?'Yahoo Finance':c.source==='EastMoney'?'东方财富':'备用数据';
-  const srcCls   = c.source==='wallstreetcn'?'src-wsn':c.source==='Yahoo'?'src-yahoo':c.source==='EastMoney'?'src-em':'src-fb';
+  const catColors = {
+    '能源':'#E72D48','贵金属':'#bd832c','工业金属':'#91CFD5',
+    '农产品':'#6CA984','黑色系':'#F9B800','外汇':'#7B68EE',
+  };
+  const srcLabel = c.source==='wallstreetcn'?'华尔街见闻 ✦':c.source==='akshare'?'akshare':c.source==='Yahoo'?'Yahoo Finance':'备用数据';
+  const srcCls   = c.source==='wallstreetcn'?'src-wsn':c.source==='akshare'?'src-em':c.source==='Yahoo'?'src-yahoo':'src-fb';
+  const catColor = catColors[c.category] || 'var(--t3)';
   document.getElementById('commDetailCard').innerHTML=`
-    <div class="card-title">${c.name} · ${c.category}</div>
-    <div class="cd-row"><span class="cd-lbl">最新价</span><span class="cd-val ${c.change_pct>=0?'pos':'neg'}">${fmt(c.price,4)}</span></div>
-    <div class="cd-row"><span class="cd-lbl">涨跌额</span><span class="cd-val ${c.change_pct>=0?'pos':'neg'}">${sign(c.change)}${fmt(c.change,4)}</span></div>
+    <div class="card-title">${c.name} · <span style="color:${catColor}">${c.category}</span></div>
+    <div class="cd-row"><span class="cd-lbl">最新价</span><span class="cd-val ${c.change_pct>=0?'pos':'neg'}">${fmt(c.price,6)}</span></div>
+    <div class="cd-row"><span class="cd-lbl">涨跌额</span><span class="cd-val ${c.change_pct>=0?'pos':'neg'}">${sign(c.change)}${fmt(c.change,6)}</span></div>
     <div class="cd-row"><span class="cd-lbl">涨跌幅</span><span class="cd-val ${c.change_pct>=0?'pos':'neg'}">${sign(c.change_pct)}${fmt(c.change_pct,2)}%</span></div>
     <div class="cd-row"><span class="cd-lbl">单位</span><span class="cd-val" style="color:var(--t2)">${c.unit}</span></div>
-    <div class="cd-row"><span class="cd-lbl">品类</span><span class="cd-val" style="color:var(--t2)">${c.category}</span></div>
+    <div class="cd-row"><span class="cd-lbl">品类</span><span class="cd-val" style="color:${catColor}">${c.category}</span></div>
     <div class="cd-row"><span class="cd-lbl">数据来源</span><span class="cd-val ${srcCls}">${srcLabel}</span></div>
     <div class="cd-row"><span class="cd-lbl">更新时间</span><span class="cd-val" style="color:var(--t3)">${(c.updated_at||'').substring(11,19)}</span></div>`;
 }
@@ -870,6 +912,7 @@ async function pollLoop() {
     const r = await fetch('/api/commodities').then(x=>x.json()).catch(()=>({}));
     if(r.ok && r.commodities?.length) {
       COMMODITIES = r.commodities;
+      renderCatFilter();
       renderCommGrid();
       updateTicker();
     }
