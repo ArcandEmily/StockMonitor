@@ -573,11 +573,22 @@ async function addStock() {
 }
 
 async function refreshStock(code) {
-  await fetch('/api/stock/refresh', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({code})
-  });
-  setTimeout(() => go(sel), 8000);
+  showToast('⏳ 正在刷新 ' + code + '…');
+  try {
+    const r = await fetch('/api/stock/refresh', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({code}),
+    });
+    const d = await r.json();
+    if(d.ok) {
+      showToast('✓ ' + code + ' 刷新中，约 8 秒后更新');
+      setTimeout(() => go(sel), 8000);
+    } else {
+      showToast('刷新失败：' + (d.error||'未知'), 'error');
+    }
+  } catch(e) {
+    showToast('网络错误：' + e.message, 'error');
+  }
 }
 
 function renderSidebar() {
@@ -764,13 +775,91 @@ async function loadCommodityAnalysis() {
 }
 
 async function refreshCommodities() {
-  document.getElementById('commAiConf').textContent = '刷新中…';
+  const btn = document.querySelector('.comm-refresh-btn');
+
+  // 防止重复点击
+  if(btn && btn.dataset.loading === '1') return;
+
+  // 按钮进入 loading 状态
+  if(btn) {
+    btn.dataset.loading = '1';
+    btn.textContent = '⏳ 刷新中…';
+    btn.style.opacity = '0.5';
+    btn.style.pointerEvents = 'none';
+  }
+
+  // 安全更新 commAiConf（可能为 null）
+  const conf = document.getElementById('commAiConf');
+  if(conf) conf.textContent = '刷新中…';
+
   try {
-    await fetch('/api/commodity/refresh', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
-    setTimeout(async ()=>{
+    const r = await fetch('/api/commodity/refresh', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: '{}',
+    });
+    const d = await r.json();
+
+    if(r.status === 429) {
+      showToast('⚠️ 正在刷新中，请稍候…', 'warn');
+      return;
+    }
+    if(!d.ok) {
+      showToast('刷新失败：' + (d.message || d.error || '未知错误'), 'error');
+      return;
+    }
+
+    showToast('✓ 已触发刷新，数据约 8 秒后更新');
+
+    // 等待后端拉取完成后重新加载
+    setTimeout(async () => {
       await loadCommodities();
-    }, 3000);
-  } catch(e) { console.error(e); }
+    }, 8000);
+
+  } catch(e) {
+    console.error('refreshCommodities:', e);
+    showToast('网络错误：' + e.message, 'error');
+  } finally {
+    // 10 秒后恢复按钮（不管成功失败）
+    setTimeout(() => {
+      if(btn) {
+        btn.dataset.loading = '0';
+        btn.textContent = '⟳ 刷新数据';
+        btn.style.opacity = '';
+        btn.style.pointerEvents = '';
+      }
+    }, 10000);
+  }
+}
+
+// ── Toast 通知（轻量，不依赖任何库）─────────────────────────
+function showToast(msg, type='info') {
+  const old = document.getElementById('__toast');
+  if(old) old.remove();
+
+  const colors = {
+    info:  {bg:'rgba(30,34,40,0.96)', border:'rgba(145,207,213,0.35)', color:'#91CFD5'},
+    warn:  {bg:'rgba(30,34,40,0.96)', border:'rgba(255,193,7,0.35)',   color:'#F9B800'},
+    error: {bg:'rgba(30,34,40,0.96)', border:'rgba(231,45,72,0.35)',   color:'#E72D48'},
+  };
+  const c = colors[type] || colors.info;
+
+  const el = document.createElement('div');
+  el.id = '__toast';
+  el.textContent = msg;
+  Object.assign(el.style, {
+    position:'fixed', bottom:'70px', left:'50%', transform:'translateX(-50%)',
+    background: c.bg, border: `1px solid ${c.border}`, color: c.color,
+    padding:'9px 20px', borderRadius:'8px', fontSize:'12px',
+    zIndex:'9999', boxShadow:'0 4px 20px rgba(0,0,0,0.5)',
+    transition:'opacity 0.3s', opacity:'0',
+  });
+  document.body.appendChild(el);
+  requestAnimationFrame(() => { el.style.opacity = '1'; });
+  setTimeout(() => {
+    el.style.opacity = '0';
+    setTimeout(() => el.remove(), 300);
+  }, 3500);
 }
 
 let _activeCat = '全部';
