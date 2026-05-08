@@ -1,7 +1,7 @@
 # 🛠️ StockMonitor · 自己打包 EXE 完整指南
 
 > 适用于 Windows 10 / 11  
-> 打包后只需 `server.exe` + `.env` 两个文件，双击即可运行
+> 打包后只需 **`server.exe` + `config.yaml`** 两个文件，双击即可运行
 
 ---
 
@@ -23,24 +23,22 @@
 cd C:\你的项目路径\StockMonitor
 ```
 
-确认目录下有这些文件再继续：
+确认以下文件存在再继续：
 
 ```
 server.py
 dashboard.html
-commodity_fetcher.py
-commodity_ai.py
-config.py
-.env
+config.yaml
+commodity_fetcher.py  commodity_ai.py
+sector_fetcher.py     capital_fetcher.py    calendar_fetcher.py
 requirements.txt
-...
 ```
 
 ---
 
 ## 第二步：创建干净的虚拟环境
 
-> 用干净环境打包，避免把本机无关的包也打进去
+> 干净环境打包，避免把本机无关的包打进去，减小体积
 
 ```bat
 :: 删除旧环境（如果有）
@@ -50,17 +48,14 @@ rmdir /s /q venv_clean
 where python
 ```
 
-把 `where python` 显示的路径复制出来，例如 `C:\Python314\python.exe`，然后：
+把 `where python` 输出的路径复制出来，替换下面的示例路径：
 
 ```bat
-:: 用完整路径创建干净虚拟环境（把下面路径换成你自己的）
 C:\Python314\python.exe -m venv venv_clean
-
-:: 激活
 venv_clean\Scripts\activate
 ```
 
-激活成功后命令行前缀会变成 `(venv_clean)`
+激活成功后，命令行前缀变为 `(venv_clean)`
 
 ---
 
@@ -68,46 +63,29 @@ venv_clean\Scripts\activate
 
 ```bat
 pip install --upgrade pip
-
-pip install ^
-    akshare ^
-    pandas ^
-    numpy ^
-    scipy ^
-    openai ^
-    loguru ^
-    python-dotenv ^
-    flask ^
-    requests ^
-    pyinstaller
+pip install -r requirements.txt
+pip install pyinstaller
 ```
 
 > ⏱️ 首次安装约需 3~8 分钟，akshare 体积较大
 
-安装完成后验证：
+验证安装：
 
 ```bat
-pip list | findstr /i "akshare flask pyinstaller"
+pip list | findstr /i "akshare flask pyinstaller pyyaml"
 ```
 
-能看到三行版本信息即为成功。
+看到四行版本信息即正常。
 
 ---
 
-## 第四步：准备 .env 文件
+## 第四步：确认 config.yaml 已填写
 
-确认项目根目录有 `.env` 文件，内容示例：
+打开 `config.yaml`，把 API Key 填进去：
 
-```env
-DEEPSEEK_API_KEY=sk-你的密钥
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-chat
-ENABLE_AI=True
-AI_MAX_TOKENS=2000
-AI_TEMPERATURE=0.2
-STOCK_CODES=000001,600519,300750
-KLINE_DAYS=250
-INTERVAL_MINUTES=60
+```yaml
+ai:
+  api_key: "sk-你的真实密钥"    ← 填这里，其余保持默认即可
 ```
 
 ---
@@ -120,13 +98,15 @@ pyinstaller --onefile --console --clean ^
     --add-data "dashboard.html;." ^
     --add-data "commodity_fetcher.py;." ^
     --add-data "commodity_ai.py;." ^
-    --add-data ".env;." ^
+    --add-data "sector_fetcher.py;." ^
+    --add-data "capital_fetcher.py;." ^
+    --add-data "calendar_fetcher.py;." ^
     --hidden-import akshare ^
     --hidden-import loguru ^
     --hidden-import flask ^
     --hidden-import requests ^
     --hidden-import openai ^
-    --hidden-import dotenv ^
+    --hidden-import yaml ^
     server.py
 ```
 
@@ -137,82 +117,124 @@ pyinstaller --onefile --console --clean ^
 | `--onefile` | 打包成单个 exe |
 | `--console` | 保留命令行窗口（方便看日志） |
 | `--clean` | 每次打包前清理缓存 |
-| `--collect-data akshare` | 把 akshare 的数据文件一起打包（必须） |
-| `--add-data "xxx;."` | 把附加文件打包进 exe 内部 |
+| `--collect-data akshare` | 打包 akshare 的数据文件（必须，否则运行报错） |
+| `--add-data "xxx;."` | 把附加文件打包进 exe 内部，`;.` 表示放在根目录 |
 | `--hidden-import xxx` | 强制包含被动态导入的模块 |
 
-> ⏱️ 打包过程约 3~10 分钟，正常现象，耐心等待
+> ⏱️ 打包约 3~10 分钟，正常现象，耐心等待  
+> ⚠️ `ws_test.py` **不需要**打包进去，它是独立验证脚本
 
 ---
 
-## 第六步：找到 exe
+## 第六步：取出并运行
 
-打包成功后在 `dist` 目录下：
+打包成功后，在 `dist\` 目录找到 `server.exe`。
 
-```
-StockMonitor\
-└── dist\
-    └── server.exe   ← 这就是打包好的文件
-```
-
----
-
-## 第七步：运行
-
-只需两个文件放在同一目录：
+**只需两个文件放在同一目录：**
 
 ```
 📁 任意目录\
-├── server.exe   ← 打包好的主程序（所有代码和资源已内置）
-└── .env         ← 配置文件（含 API Key，可随时修改）
+├── server.exe     ← 打包好的主程序（含所有代码和资源）
+└── config.yaml    ← 配置文件（API Key、股票代码、刷新间隔等）
 ```
 
 双击 `server.exe`，看到以下输出即为成功：
 
 ```
-===================================================
+=====================================================
   StockMonitor · Web 仪表盘后端
-===================================================
+=====================================================
   模式：真实数据 (akshare + AI)
   地址：http://localhost:5000
   按 Ctrl+C 停止
-===================================================
 ```
 
-打开浏览器访问：**http://localhost:5000**
+打开浏览器访问 **http://localhost:5000**
 
-> 💡 `.env` 是唯一需要保留在外部的文件，方便随时修改股票代码和 API Key，  
-> 修改后重启 exe 即可生效，**无需重新打包**
+> 💡 修改 `config.yaml`（股票代码、API Key、刷新间隔等）后，**重启 exe 即可生效，无需重新打包**
+
+---
+
+## config.yaml 常用配置
+
+```yaml
+ai:
+  api_key: "sk-你的密钥"          # DeepSeek API Key（必填）
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-chat"
+  enabled: true
+  max_tokens: 2000
+  temperature: 0.2
+  timeout: 60
+  thinking:
+    enabled: false               # 思考模式（更准但更贵，默认关闭）
+    effort: "high"               # high 或 max
+
+stocks:
+  codes:
+    - "000001"
+    - "600519"
+    - "300750"
+  kline_days: 250
+  interval_minutes: 60           # 自动刷新间隔（分钟）
+
+alerts:
+  enable_sound: false
+```
+
+**切换到 GPT-4o：**
+```yaml
+ai:
+  api_key: "sk-你的OpenAI密钥"
+  base_url: "https://api.openai.com/v1"
+  model: "gpt-4o"
+```
+
+**切换到本地 Ollama（免费，需先安装 Ollama）：**
+```yaml
+ai:
+  api_key: "ollama"
+  base_url: "http://localhost:11434/v1"
+  model: "qwen2.5:7b"
+```
 
 ---
 
 ## 常见报错 & 解决方法
 
+### ❌ `ModuleNotFoundError: No module named 'yaml'`
+
+打包命令已包含 `--hidden-import yaml`，若仍报错，在虚拟环境里补装：
+```bat
+pip install pyyaml
+```
+然后重新打包。
+
 ### ❌ `ModuleNotFoundError: No module named 'akshare'`
 
+akshare 有额外数据文件，把 `--collect-data akshare` 换成更彻底的：
 ```bat
-:: 把 --collect-data 换成 --collect-all
 --collect-all akshare
 ```
 
 ### ❌ exe 打开一闪而过
 
-原因：程序报错后窗口立刻关闭，用命令行运行查看完整报错：
-
+程序内部报错但窗口关闭太快，改用命令行运行查看完整错误：
 ```bat
-cd 你的exe所在目录
+cd 你的exe目录
 server.exe
 ```
 
 ### ❌ 端口 5000 已被占用
 
 ```bat
-:: 查找占用进程
 netstat -ano | findstr :5000
-
-:: 结束对应进程（替换为实际 PID）
-taskkill /PID 12345 /F
+taskkill /PID 替换为实际PID /F
 ```
+
+### ❌ 板块联动 / 北向资金 显示"暂不可用"
+
+这两个功能依赖 akshare 调用 A 股交易所接口，**非交易时段（收盘后/周末）会返回空数据**，属正常现象，交易时间内可正常显示。
 
 ### ❌ `WARNING: Hidden import not found`
 
@@ -222,7 +244,7 @@ taskkill /PID 12345 /F
 
 ## 更新流程
 
-修改代码后重新打包，然后只替换 exe：
+代码有修改时，重新打包后只替换 exe，**config.yaml 不需要动**：
 
 ```bat
 cd C:\你的项目路径\StockMonitor
@@ -233,16 +255,18 @@ pyinstaller --onefile --console --clean ^
     --add-data "dashboard.html;." ^
     --add-data "commodity_fetcher.py;." ^
     --add-data "commodity_ai.py;." ^
-    --add-data ".env;." ^
+    --add-data "sector_fetcher.py;." ^
+    --add-data "capital_fetcher.py;." ^
+    --add-data "calendar_fetcher.py;." ^
     --hidden-import akshare ^
     --hidden-import loguru ^
     --hidden-import flask ^
     --hidden-import requests ^
     --hidden-import openai ^
-    --hidden-import dotenv ^
+    --hidden-import yaml ^
     server.py
 
-:: 替换旧 exe（.env 不需要动）
+:: 替换发布目录里的旧 exe
 copy /y dist\server.exe 你的发布目录\server.exe
 ```
 
@@ -254,11 +278,11 @@ copy /y dist\server.exe 你的发布目录\server.exe
 |------|------|
 | 正常范围 | 80 ~ 150 MB |
 | akshare 数据文件贡献 | ~60 MB |
-| 超过 200 MB | 检查是否混入了不必要的包 |
+| 超过 200 MB | 检查是否混入了无关包 |
 
 ---
 
-## 已验证的依赖版本（参考）
+## 已验证依赖版本
 
 ```
 akshare          1.18.60
@@ -267,8 +291,9 @@ numpy            2.4.4
 openai           2.34.0
 pandas           3.0.2
 pyinstaller      6.20.0
-python-dotenv    1.2.2
+pyyaml           6.0.3
 requests         2.33.1
 scipy            1.17.1
 loguru           0.7.3
+openpyxl         3.1.5
 ```
