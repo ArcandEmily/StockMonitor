@@ -85,11 +85,21 @@ def _fetch_northbound() -> dict:
 
         df = df.tail(10)
         history = []
+        # akshare 当前列名：'当日成交净买额'（亿元，已经是亿元单位，不要再除 1e8）
+        # 兼容旧列名 '当日净买额'
+        net_col = next((c for c in ["当日成交净买额", "当日净买额", "net_buy"] if c in df.columns), None)
+        cum_col = next((c for c in ["历史累计净买额", "累计净买额"] if c in df.columns), None)
+        if not net_col:
+            logger.warning(f"[北向] 找不到净买额列，实际列名: {list(df.columns)}")
+            return empty
+
         for _, row in df.iterrows():
+            raw_net = float(row.get(net_col, 0) or 0)
+            # akshare 北向资金返回单位已经是亿元，无需 /1e8
             history.append({
                 "date":        str(row.get("日期", row.get("date", ""))),
-                "net":         round(float(row.get("当日净买额", row.get("net_buy", 0)) or 0) / 1e8, 2),
-                "cumulative":  round(float(row.get("历史累计净买额", 0) or 0) / 1e8, 2),
+                "net":         round(raw_net, 2),
+                "cumulative":  round(float(row.get(cum_col, 0) or 0), 2) if cum_col else 0,
             })
 
         today_net = history[-1]["net"]   if history else None
@@ -147,42 +157,62 @@ def _fetch_margin(code: str) -> dict:
     if not HAS_AK:
         return empty
 
+    is_sh = code.startswith("6")
+    fetcher = ak.stock_margin_detail_sse if is_sh else ak.stock_margin_detail_szse
+    code_col_candidates = ["股票代码", "证券代码", "标的证券代码"]
+
+    # 尝试今天 → 昨天 → ... 最多回溯 7 天，找到有数据的最近交易日
+    today = datetime.date.today()
+    df, used_date = None, None
+    for back in range(0, 8):
+        d = today - datetime.timedelta(days=back)
+        # 跳过周末
+        if d.weekday() >= 5:
+            continue
+        date_str = d.strftime("%Y%m%d")
+        try:
+            df_try = fetcher(date=date_str)
+            if df_try is not None and not df_try.empty:
+                df, used_date = df_try, date_str
+                break
+        except Exception as e:
+            logger.debug(f"[融资融券] {code} 拉取 {date_str} 失败: {e}")
+            continue
+
+    if df is None or df.empty:
+        logger.warning(f"[融资融券] {code} 近 7 日均无数据")
+        return empty
+
     try:
-        today    = datetime.date.today()
-        date_str = today.strftime("%Y%m%d")
-
-        # 根据市场选接口
-        if code.startswith("6"):
-            df = ak.stock_margin_detail_sse(date=date_str)
-            code_col = "股票代码"
-        else:
-            df = ak.stock_margin_detail_szse(date=date_str)
-            code_col = "证券代码"
-
-        if df is None or df.empty:
+        # 找代码列
+        code_col = next((c for c in code_col_candidates if c in df.columns), None)
+        if not code_col:
+            logger.warning(f"[融资融券] {code} 找不到代码列，实际列: {list(df.columns)}")
             return empty
 
-        # 找到目标股票行
-        row = df[df[code_col].astype(str).str.contains(code)]
+        row = df[df[code_col].astype(str).str.zfill(6) == code.zfill(6)]
         if row.empty:
+            logger.info(f"[融资融券] {code} 在 {used_date} 数据中未找到")
             return empty
 
         r = row.iloc[0]
-        margin_bal = float(r.get("融资余额", 0) or 0)
-        short_bal  = float(r.get("融券余额", 0) or r.get("融券余量金额", 0) or 0)
-        margin_buy = float(r.get("融资买入额", 0) or 0)
+        # 兼容沪/深不同列名
+        margin_bal = float(r.get("融资余额", r.get("融资余额(元)", 0)) or 0)
+        short_bal  = float(r.get("融券余量金额", r.get("融券余额", r.get("融券余额(元)", 0))) or 0)
+        margin_buy = float(r.get("融资买入额", r.get("融资买入额(元)", 0)) or 0)
 
-        logger.info(f"[融资融券] {code} 融资余额={margin_bal/1e8:.2f}亿")
+        logger.info(f"[融资融券] {code} ({used_date}) 融资余额={margin_bal/1e8:.2f}亿  融券={short_bal/1e8:.2f}亿")
         return {
             "margin_balance":    margin_bal,
             "short_balance":     short_bal,
             "margin_buy":        margin_buy,
-            "margin_change_pct": None,   # 需要历史数据计算，此处省略
+            "margin_change_pct": None,
             "history":           [],
+            "data_date":         used_date,
             "updated_at":        datetime.datetime.now().isoformat(),
             "source":            "akshare",
         }
 
     except Exception as e:
-        logger.debug(f"[融资融券] {code} 获取失败: {e}")
+        logger.warning(f"[融资融券] {code} 解析失败: {e}")
         return empty

@@ -73,9 +73,27 @@ body.light .sidebar        { box-shadow: 2px 0 8px rgba(0,0,0,0.06); }
 /* ── 北向资金 + 融资融券 ────────────────────────────────── */
 .capital-row { display: flex; gap: 8px; margin-top: 10px; }
 .capital-card { flex: 1; background: var(--bg-card); border: 1px solid var(--border);
-                border-radius: 8px; padding: 10px 12px; }
+                border-radius: 8px; padding: 10px 12px;
+                position: relative; cursor: help;
+                transition: border-color 0.15s; }
+.capital-card:hover { border-color: rgba(230,57,124,0.35); }
 .capital-lbl  { font-size: 9px; color: var(--t3); margin-bottom: 4px; letter-spacing: 0.5px; }
 .capital-val  { font-size: 14px; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+
+/* 自定义 tooltip：data-tooltip 属性驱动 */
+.capital-card[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+  background: var(--bg-card); border: 1px solid var(--border);
+  color: var(--t2); font-size: 10px; line-height: 1.55;
+  padding: 7px 10px; border-radius: 6px;
+  white-space: pre; pointer-events: none;
+  opacity: 0; visibility: hidden;
+  transition: opacity 0.15s, visibility 0.15s;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+}
+.capital-card[data-tooltip]:hover::after { opacity: 1; visibility: visible; }
 
 /* ── 财报日历 ───────────────────────────────────────────── */
 .cal-event { display: flex; align-items: center; gap: 10px;
@@ -89,7 +107,7 @@ body.light .sidebar        { box-shadow: 2px 0 8px rgba(0,0,0,0.06); }
 .cal-days.overdue { background: rgba(231,45,72,0.1);  color: var(--red); }
 
 /* ── KDJ 图表容器 ───────────────────────────────────────── */
-.kdj-wrap { height: 110px; margin-top: 8px; }
+.kdj-wrap { height: 145px; margin-top: 8px; }
 
 /* ── 快捷键帮助弹窗 ─────────────────────────────────────── */
 .shortcut-modal {
@@ -1299,8 +1317,8 @@ function renderCandleChart(candles, kdjK, kdjD, kdjJ, kdjLbls) {
     backgroundColor: 'transparent',
     animation: false,
     grid: [
-      {left:50, right:16, top:10,   bottom:70},  // 价格
-      {left:50, right:16, top:'72%', bottom:20}, // 成交量
+      {left:50, right:16, top:10,    bottom:74},  // 价格
+      {left:50, right:16, top:'74%', bottom:28},  // 成交量
     ],
     xAxis: [
       {...baseAxis, gridIndex:0, axisLabel:{show:false}},
@@ -1325,9 +1343,42 @@ function renderCandleChart(candles, kdjK, kdjD, kdjJ, kdjLbls) {
     },
     dataZoom: [
       {type:'inside', xAxisIndex:[0,1], start:0, end:100},
-      {type:'slider', xAxisIndex:[0,1], bottom:2, height:16,
-       fillerColor:'rgba(230,57,124,0.12)', borderColor:'transparent',
-       textStyle:{color:C.text, fontSize:8}},
+      {
+        type:'slider', xAxisIndex:[0,1],
+        bottom: 4, height: 14,
+        // 整体配色：透明背景，弱化存在感
+        backgroundColor: 'transparent',
+        borderColor: 'transparent',
+        // 缩略图区
+        dataBackground: {
+          lineStyle: {color: C.axis, width: 1, opacity: 0.4},
+          areaStyle: {color: C.axis, opacity: 0.15},
+        },
+        selectedDataBackground: {
+          lineStyle: {color: 'rgba(230,57,124,0.5)', width: 1},
+          areaStyle: {color: 'rgba(230,57,124,0.18)'},
+        },
+        // 选中区域填充
+        fillerColor: 'rgba(230,57,124,0.08)',
+        // 两侧手柄：细窄竖条
+        handleSize: '85%',
+        handleStyle: {
+          color: 'rgba(230,57,124,0.85)',
+          borderColor: 'rgba(230,57,124,0.85)',
+          borderWidth: 0,
+          shadowBlur: 0,
+        },
+        handleIcon: 'M4,0 L4,20 L0,20 L0,0 Z',  // 自定义细竖条手柄
+        // 中间整体拖动区
+        moveHandleSize: 4,
+        moveHandleStyle: {color: 'rgba(230,57,124,0.4)'},
+        // 隐藏百分比文字（视觉更干净）
+        showDetail: false,
+        showDataShadow: true,
+        textStyle: {color: 'transparent', fontSize: 0},
+        // 边距
+        left: 50, right: 16,
+      },
     ],
     series: [
       {
@@ -1354,7 +1405,7 @@ function renderCandleChart(candles, kdjK, kdjD, kdjJ, kdjLbls) {
   _kdjChart.setOption({
     backgroundColor: 'transparent',
     animation: false,
-    grid: {left:50, right:16, top:6, bottom:24},
+    grid: {left:38, right:14, top:22, bottom:22},
     xAxis: {
       type:'category', data: kDates,
       axisLine:{lineStyle:{color:C.axis}},
@@ -1372,16 +1423,27 @@ function renderCandleChart(candles, kdjK, kdjD, kdjJ, kdjLbls) {
       textStyle:{fontSize:10, color: document.body.classList.contains('light') ? '#1a1a2e' : '#F5EFEA'},
     },
     legend: {
-      data:['K','D','J'], top:0, right:0,
+      data:['K','D','J'],
+      top: 2, left: 'center',
+      itemWidth: 10, itemHeight: 2, itemGap: 14,
       textStyle:{color:C.text, fontSize:9},
     },
-    // 超买/超卖参考线
-    markLine: {silent:true},
     series: [
       {name:'K', type:'line', data:kdjK, smooth:true,
        lineStyle:{color:'#F9B800',width:1.2}, symbol:'none',
-       markLine:{data:[{yAxis:80,lineStyle:{color:'rgba(231,45,72,0.3)'}},
-                       {yAxis:20,lineStyle:{color:'rgba(108,169,132,0.3)'}}]}},
+       markLine:{
+         silent: true, symbol: 'none',
+         label: {
+           show: true, position: 'insideStartTop',
+           formatter: '{c}', color: C.text, fontSize: 9, opacity: 0.7,
+           padding: [0, 4, 0, 0],
+         },
+         lineStyle: {width: 1, type: 'dashed'},
+         data: [
+           {yAxis: 80, lineStyle: {color: 'rgba(231,45,72,0.35)'}},
+           {yAxis: 20, lineStyle: {color: 'rgba(108,169,132,0.35)'}},
+         ],
+       }},
       {name:'D', type:'line', data:kdjD, smooth:true,
        lineStyle:{color:'#91CFD5',width:1.2}, symbol:'none'},
       {name:'J', type:'line', data:kdjJ, smooth:true,
@@ -1493,37 +1555,78 @@ function renderSectorPanel(s) {
 //  北向资金 + 融资融券
 // ══════════════════════════════════════════════════════════
 async function loadCapitalInfo(code) {
+  const el = document.getElementById('capitalContent');
   try {
     const [nr, mr] = await Promise.all([
-      fetch('/api/market/northbound').then(r=>r.json()),
-      fetch(`/api/stock/${code}/margin`).then(r=>r.json()),
+      fetch('/api/market/northbound').then(r=>r.json()).catch(e => ({ok:false, error:String(e)})),
+      fetch(`/api/stock/${code}/margin`).then(r=>r.json()).catch(e => ({ok:false, error:String(e)})),
     ]);
-    renderCapitalPanel(nr.northbound, mr.margin);
-  } catch { }
+    // 任一失败也照样渲染另一边；都失败时给明确提示
+    if (!nr.ok && !mr.ok) {
+      el.innerHTML = `<span style="color:var(--t3);font-size:11px">数据接口暂不可用（${nr.error||mr.error||''}）</span>`;
+      return;
+    }
+    renderCapitalPanel(nr.northbound || null, mr.margin || null);
+  } catch (e) {
+    console.error('[capital] load failed:', e);
+    el.innerHTML = `<span style="color:var(--t3);font-size:11px">加载失败：${e.message||e}</span>`;
+  }
 }
 
 function renderCapitalPanel(north, margin) {
   const el = document.getElementById('capitalContent');
-  if (!north && !margin) { el.innerHTML = '<span style="color:var(--t3);font-size:11px">数据暂不可用</span>'; return; }
 
-  const northHtml = north?.today_net !== null ? `
-    <div class="capital-card">
+  // 判断是否有任何可显示的数据（值不为 null/undefined 才算）
+  const hasNorth  = north  && (north.today_net !== null && north.today_net !== undefined);
+  const hasMargin = margin && (margin.margin_balance !== null && margin.margin_balance !== undefined && margin.margin_balance > 0);
+
+  if (!hasNorth && !hasMargin) {
+    el.innerHTML = '<span style="color:var(--t3);font-size:11px">暂无数据（非交易时段或数据未发布）</span>';
+    return;
+  }
+
+  // ── 北向资金 tooltip：取最近一条 history 日期 + 5 日累计趋势
+  const fmtDate = s => s ? String(s).slice(0,10).replace(/-/g, '/') : '--';
+  const escAttr = s => String(s).replace(/"/g, '&quot;');
+  const northHtml = hasNorth ? (() => {
+    const lastDate = north.history?.length ? north.history[north.history.length-1].date : null;
+    const trend5   = (north['5day_net'] || 0) >= 0 ? '净流入' : '净流出';
+    const tip = [
+      `数据日期：${fmtDate(lastDate)}`,
+      `近5日趋势：${trend5} ${Math.abs(north['5day_net']||0).toFixed(2)} 亿`,
+      `来源：${north.source || 'akshare'}`,
+    ].join('\n');
+    return `
+    <div class="capital-card" data-tooltip="${escAttr(tip)}">
       <div class="capital-lbl">北向资金 今日净流入</div>
-      <div class="capital-val ${(north.today_net||0)>=0?'pos':'neg'}">
-        ${(north.today_net||0)>=0?'+':''}${(north.today_net||0).toFixed(1)} 亿
+      <div class="capital-val ${north.today_net>=0?'pos':'neg'}">
+        ${north.today_net>=0?'+':''}${north.today_net.toFixed(1)} 亿
       </div>
       <div style="font-size:9px;color:var(--t3);margin-top:3px">
         近5日 ${(north['5day_net']||0)>=0?'+':''}${(north['5day_net']||0).toFixed(1)} 亿
       </div>
-    </div>` : '';
+    </div>`;
+  })() : '';
 
+  // ── 融资融券 tooltip：实际数据日期（关键，因为可能不是今天）
   const fmtB = v => v ? `${(v/1e8).toFixed(2)} 亿` : '--';
-  const marginHtml = margin?.margin_balance ? `
-    <div class="capital-card">
-      <div class="capital-lbl">融资余额</div>
+  const marginHtml = hasMargin ? (() => {
+    const dataDate = margin.data_date
+      ? `${margin.data_date.slice(0,4)}/${margin.data_date.slice(4,6)}/${margin.data_date.slice(6,8)}`
+      : '--';
+    const buyTxt   = margin.margin_buy ? `${(margin.margin_buy/1e8).toFixed(2)} 亿` : '--';
+    const tip = [
+      `数据日期：${dataDate}`,
+      `融资买入额：${buyTxt}`,
+      `来源：${margin.source || 'akshare'}`,
+    ].join('\n');
+    return `
+    <div class="capital-card" data-tooltip="${escAttr(tip)}">
+      <div class="capital-lbl">融资余额${margin.data_date?`（${margin.data_date.slice(4,6)}/${margin.data_date.slice(6,8)}）`:''}</div>
       <div class="capital-val">${fmtB(margin.margin_balance)}</div>
       <div style="font-size:9px;color:var(--t3);margin-top:3px">融券 ${fmtB(margin.short_balance)}</div>
-    </div>` : '';
+    </div>`;
+  })() : '';
 
   el.innerHTML = `<div class="capital-row">${northHtml}${marginHtml}</div>`;
 }
