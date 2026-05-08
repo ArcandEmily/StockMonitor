@@ -194,13 +194,16 @@ RSI：{rsi:.2f}　（超卖区<30，超买区>70）
 
 class AIAdvisor:
     def __init__(self, api_key: str, base_url: str, model: str,
-                 temperature: float = 0.2, max_tokens: int = 800, timeout: int = 60):
+                 temperature: float = 0.2, max_tokens: int = 800, timeout: int = 60,
+                 enable_thinking: bool = False, thinking_effort: str = "high"):
         self.api_key = api_key
         self.base_url = base_url
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.timeout = timeout
+        self.enable_thinking = enable_thinking
+        self.thinking_effort = thinking_effort
         self._client = None
 
     def _get_client(self):
@@ -221,7 +224,9 @@ class AIAdvisor:
         """
         try:
             client = self._get_client()
-            response = client.chat.completions.create(
+
+            # ── 构造请求参数 ───────────────────────────────────────────
+            kwargs = dict(
                 model=self.model,
                 messages=[
                     {
@@ -233,10 +238,26 @@ class AIAdvisor:
                     },
                     {"role": "user", "content": prompt},
                 ],
-                temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
+
+            if self.enable_thinking:
+                # 思考模式：不传 temperature，加思考参数
+                kwargs["reasoning_effort"] = self.thinking_effort
+                kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+                logger.debug(f"AI 思考模式已开启（effort={self.thinking_effort}）")
+            else:
+                kwargs["temperature"] = self.temperature
+
+            response = client.chat.completions.create(**kwargs)
             raw = response.choices[0].message.content.strip()
+
+            # 思考模式下可获取思维链（仅打日志，不影响结果）
+            if self.enable_thinking:
+                rc = getattr(response.choices[0].message, "reasoning_content", None)
+                if rc:
+                    logger.debug(f"思维链（前200字）: {rc[:200]}")
+
             return self._parse_response(raw)
 
         except APITimeoutError:

@@ -79,13 +79,16 @@ RULE_IMPACT = {
 
 class CommodityAIAdvisor:
     def __init__(self, api_key: str, base_url: str, model: str,
-                 temperature: float = 0.3, max_tokens: int = 2000, timeout: int = 90):
+                 temperature: float = 0.3, max_tokens: int = 2000, timeout: int = 90,
+                 enable_thinking: bool = False, thinking_effort: str = "high"):
         self.api_key    = api_key
         self.base_url   = base_url
         self.model      = model
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.timeout    = timeout
+        self.enable_thinking   = enable_thinking
+        self.thinking_effort   = thinking_effort
         self._client    = None
 
     def _get_client(self):
@@ -107,9 +110,10 @@ class CommodityAIAdvisor:
             return self._rule_fallback(commodities)
 
         try:
-            client  = self._get_client()
-            prompt  = self._build_prompt(commodities)
-            resp    = client.chat.completions.create(
+            client = self._get_client()
+            prompt = self._build_prompt(commodities)
+
+            kwargs = dict(
                 model=self.model,
                 messages=[
                     {
@@ -121,10 +125,18 @@ class CommodityAIAdvisor:
                     },
                     {"role": "user", "content": prompt},
                 ],
-                temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
-            raw = resp.choices[0].message.content.strip()
+
+            if self.enable_thinking:
+                kwargs["reasoning_effort"] = self.thinking_effort
+                kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+                logger.debug(f"大宗商品 AI 思考模式已开启（effort={self.thinking_effort}）")
+            else:
+                kwargs["temperature"] = self.temperature
+
+            resp = client.chat.completions.create(**kwargs)
+            raw  = resp.choices[0].message.content.strip()
             return self._parse(raw, commodities)
 
         except APITimeoutError:

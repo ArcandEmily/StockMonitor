@@ -6,9 +6,11 @@
 <title>StockMonitor · 智能股票监控</title>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600&family=Noto+Sans+SC:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.4.3/echarts.min.js"></script>
 <style>
 :root {
   --bg:          #111115;
+  --bg2:         #0d0d11;
   --bg-sidebar:  #0d0d11;
   --bg-card:     rgba(255,255,255,0.028);
   --bg-card-h:   rgba(255,255,255,0.05);
@@ -25,7 +27,88 @@
   --t1:          #F5EFEA;
   --t2:          rgba(245,239,234,0.6);
   --t3:          rgba(245,239,234,0.32);
+  --echart-bg:   transparent;
+  --echart-axis: rgba(245,239,234,0.2);
+  --echart-text: rgba(245,239,234,0.55);
 }
+
+/* ── 亮色主题 ───────────────────────────────────────────── */
+body.light {
+  --bg:          #f0f2f5;
+  --bg2:         #ffffff;
+  --bg-sidebar:  #ffffff;
+  --bg-card:     #ffffff;
+  --bg-card-h:   #f8f9fa;
+  --border:      rgba(0,0,0,0.09);
+  --border-b:    rgba(0,0,0,0.16);
+  --t1:          #1a1a2e;
+  --t2:          rgba(26,26,46,0.65);
+  --t3:          rgba(26,26,46,0.38);
+  --echart-bg:   transparent;
+  --echart-axis: rgba(26,26,46,0.15);
+  --echart-text: rgba(26,26,46,0.5);
+}
+body.light .ticker-bar    { background: #ffffff; border-top: 1px solid rgba(0,0,0,0.09); }
+body.light .sidebar        { box-shadow: 2px 0 8px rgba(0,0,0,0.06); }
+
+/* ── 图表范围选择器 ─────────────────────────────────────── */
+.range-btns { display: flex; gap: 5px; margin-bottom: 8px; }
+.range-btn {
+  font-size: 10px; padding: 2px 9px; border-radius: 4px; cursor: pointer;
+  border: 1px solid var(--border); color: var(--t3);
+  transition: all 0.15s; user-select: none;
+}
+.range-btn.active { background: var(--pink); border-color: var(--pink); color: #fff; }
+.range-btn:hover  { color: var(--t1); border-color: var(--border-b); }
+
+/* ── 板块联动卡片 ───────────────────────────────────────── */
+.sector-panel { margin-top: 12px; }
+.sector-title { font-size: 10px; color: var(--t3); letter-spacing: 1px;
+                text-transform: uppercase; margin-bottom: 8px; }
+.sector-name  { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+.peer-row { display: flex; justify-content: space-between; align-items: center;
+            padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 11px; }
+.peer-row:last-child { border-bottom: none; }
+
+/* ── 北向资金 + 融资融券 ────────────────────────────────── */
+.capital-row { display: flex; gap: 8px; margin-top: 10px; }
+.capital-card { flex: 1; background: var(--bg-card); border: 1px solid var(--border);
+                border-radius: 8px; padding: 10px 12px; }
+.capital-lbl  { font-size: 9px; color: var(--t3); margin-bottom: 4px; letter-spacing: 0.5px; }
+.capital-val  { font-size: 14px; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+
+/* ── 财报日历 ───────────────────────────────────────────── */
+.cal-event { display: flex; align-items: center; gap: 10px;
+             padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 11px; }
+.cal-event:last-child { border-bottom: none; }
+.cal-days { min-width: 38px; text-align: center; padding: 2px 6px;
+            border-radius: 4px; font-size: 10px; font-weight: 600; }
+.cal-days.today   { background: rgba(230,57,124,0.2); color: var(--pink); }
+.cal-days.soon    { background: rgba(249,184,0,0.15); color: var(--amber); }
+.cal-days.future  { background: rgba(145,207,213,0.1); color: var(--blue); }
+.cal-days.overdue { background: rgba(231,45,72,0.1);  color: var(--red); }
+
+/* ── KDJ 图表容器 ───────────────────────────────────────── */
+.kdj-wrap { height: 110px; margin-top: 8px; }
+
+/* ── 快捷键帮助弹窗 ─────────────────────────────────────── */
+.shortcut-modal {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  display: none; align-items: center; justify-content: center; z-index: 3000;
+}
+.shortcut-modal.open { display: flex; }
+.shortcut-box {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 14px; padding: 24px 32px; min-width: 320px;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+}
+.shortcut-box h3  { font-size: 14px; margin-bottom: 16px; }
+.sk-row { display: flex; justify-content: space-between; padding: 5px 0;
+          border-bottom: 1px solid var(--border); font-size: 12px; }
+.sk-row:last-child { border-bottom: none; }
+.sk-key { background: rgba(255,255,255,0.06); border: 1px solid var(--border);
+          border-radius: 4px; padding: 1px 7px; font-family: monospace;
+          font-size: 11px; color: var(--blue); }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
 body {
@@ -217,21 +300,83 @@ body {
 .cc-unit { font-size: 10px; color: var(--t3); }
 .cc-change { font-family: 'JetBrains Mono', monospace; font-size: 11px; margin-top: 5px; }
 .cc-source { font-size: 9px; color: var(--t3); margin-top: 4px; }
+.cc-spark { margin-top: 6px; height: 24px; }
 
 /* 分类筛选 Tab */
-.cat-filter {
-  display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px;
-}
+.cat-filter { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
 .cat-btn {
   font-size: 10px; padding: 3px 11px; border-radius: 20px; cursor: pointer;
-  border: 1px solid var(--border); color: var(--t3);
-  transition: all 0.15s; user-select: none;
+  border: 1px solid var(--border); color: var(--t3); transition: all 0.15s; user-select: none;
 }
 .cat-btn:hover { color: var(--t1); border-color: var(--border-b); }
-.cat-btn.active {
-  color: #fff; border-color: transparent;
-  background: var(--pink);
+.cat-btn.active { color: #fff; border-color: transparent; background: var(--pink); }
+
+/* 连接状态 */
+.conn-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  display: inline-block; margin-right: 6px; flex-shrink: 0;
+  transition: background 0.5s;
 }
+.conn-dot.ok     { background: #22c55e; box-shadow: 0 0 5px #22c55e88; }
+.conn-dot.slow   { background: #f59e0b; }
+.conn-dot.dead   { background: #ef4444; }
+.conn-label { font-size: 10px; color: var(--t3); }
+
+/* 工具按钮组 */
+.toolbar-btns { display: flex; gap: 8px; align-items: center; margin-left: auto; }
+.tool-btn {
+  font-size: 11px; padding: 4px 12px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border); color: var(--t2);
+  transition: all 0.15s; user-select: none; white-space: nowrap;
+}
+.tool-btn:hover { border-color: var(--border-b); color: var(--t1); }
+.tool-btn.primary { background: rgba(230,57,124,0.1); border-color: rgba(230,57,124,0.3); color: var(--pink); }
+
+/* 预警面板 */
+.alert-bell { font-size: 16px; cursor: pointer; padding: 4px; position: relative; }
+.alert-badge {
+  position: absolute; top: 0; right: 0;
+  background: var(--red); color: #fff; font-size: 9px;
+  border-radius: 8px; padding: 0 4px; min-width: 14px; text-align: center;
+  display: none;
+}
+.alert-panel {
+  position: fixed; top: 60px; right: 20px; width: 360px;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 12px; padding: 16px; z-index: 1000;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  display: none;
+}
+.alert-panel.open { display: block; }
+.alert-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.alert-row:last-child { border-bottom: none; }
+.alert-row .triggered { color: var(--green); font-weight: 600; }
+.alert-add-form { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.alert-add-form input, .alert-add-form select {
+  flex: 1; min-width: 80px; background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 6px; color: var(--t1); padding: 5px 8px; font-size: 11px;
+}
+.alert-add-form button {
+  padding: 5px 12px; border-radius: 6px; border: none;
+  background: var(--pink); color: #fff; cursor: pointer; font-size: 11px;
+}
+
+/* 市场总结弹窗 */
+.summary-modal {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  display: none; align-items: center; justify-content: center; z-index: 2000;
+}
+.summary-modal.open { display: flex; }
+.summary-box {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 16px; padding: 28px; max-width: 540px; width: 90%;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.6);
+}
+.summary-box h3 { font-size: 15px; margin-bottom: 6px; }
+.summary-box .summary-date { font-size: 11px; color: var(--t3); margin-bottom: 16px; }
+.summary-content { font-size: 13px; line-height: 1.8; color: var(--t2); white-space: pre-wrap; }
+.summary-close { margin-top: 20px; text-align: right; }
+.summary-close button { padding: 6px 20px; border-radius: 8px; border: 1px solid var(--border); background: transparent; color: var(--t2); cursor: pointer; font-size: 12px; }
 
 /* 分析区：左侧商品详情 + 右侧 AI */
 .comm-analysis-row { display: grid; grid-template-columns: 1fr 1.4fr; gap: 14px; }
@@ -375,14 +520,19 @@ body {
           <div class="chart-wrap"><canvas id="macdChart"></canvas></div>
         </div>
         <div class="card">
-          <div class="card-title">价格 · 布林带（20/2）</div>
-          <div class="chart-legend">
-            <div class="cl-item"><div class="cl-line" style="background:var(--cream)"></div>收盘价</div>
-            <div class="cl-item"><div class="cl-dash" style="border-color:var(--red);opacity:0.6"></div>上轨</div>
-            <div class="cl-item"><div class="cl-dash" style="border-color:var(--blue);opacity:0.6"></div>中轨</div>
-            <div class="cl-item"><div class="cl-dash" style="border-color:var(--green);opacity:0.6"></div>下轨</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <div class="card-title" style="margin-bottom:0">K线图（蜡烛图）· 均线 · 成交量</div>
+            <div class="range-btns" id="rangebtns">
+              <div class="range-btn active" onclick="setCandleRange(20)">20日</div>
+              <div class="range-btn" onclick="setCandleRange(40)">40日</div>
+              <div class="range-btn" onclick="setCandleRange(60)">60日</div>
+            </div>
           </div>
-          <div class="chart-wrap"><canvas id="bbChart"></canvas></div>
+          <div id="candleChart" style="height:220px;width:100%"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">KDJ 随机指标（K&lt;20超卖 / K&gt;80超买）</div>
+          <div id="kdjChart" class="kdj-wrap"></div>
         </div>
       </div>
       <div class="card">
@@ -403,6 +553,24 @@ body {
           <div id="aiPanel"></div>
         </div>
       </div>
+      <!-- 板块联动 + 北向 + 融资 -->
+      <div id="sectorPanel" style="display:none">
+        <div class="card sector-panel">
+          <div class="sector-title">同板块联动</div>
+          <div id="sectorContent"><span style="color:var(--t3);font-size:11px">加载中…</span></div>
+        </div>
+        <div class="card" style="margin-top:12px">
+          <div class="sector-title">北向资金 · 融资融券</div>
+          <div id="capitalContent"><span style="color:var(--t3);font-size:11px">加载中…</span></div>
+        </div>
+      </div>
+      <!-- 财报/事件日历 -->
+      <div id="calendarPanel" style="display:none">
+        <div class="card" style="margin-top:12px">
+          <div class="card-title">📅 近期重要事件（财报 · 分红 · 除权）</div>
+          <div id="calendarContent"></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -411,9 +579,21 @@ body {
     <div class="comm-header">
       <div class="comm-title-block">
         <h2>全球大宗商品行情</h2>
-        <p>数据来源：<span class="wsn-badge">华尔街见闻 WallStreetCN</span> · Yahoo Finance · DeepSeek AI 产业影响分析</p>
+        <p>数据来源：<span class="wsn-badge">华尔街见闻 WallStreetCN</span> · akshare · DeepSeek AI 产业影响分析</p>
       </div>
-      <div class="comm-actions">
+      <div class="toolbar-btns">
+        <div style="display:flex;align-items:center;gap:4px">
+          <span class="conn-dot ok" id="connDot"></span>
+          <span class="conn-label" id="connLabel">已连接</span>
+        </div>
+        <div style="position:relative;cursor:pointer" onclick="toggleAlertPanel()">
+          <div class="alert-bell">🔔</div>
+          <div class="alert-badge" id="alertBadge"></div>
+        </div>
+        <div class="tool-btn primary" onclick="triggerSummary()">📝 市场总结</div>
+        <div class="tool-btn" onclick="triggerExport()">📊 导出 Excel</div>
+        <div class="tool-btn" onclick="toggleTheme()" id="themeBtn" title="切换主题 (T)">🌙</div>
+        <div class="tool-btn" onclick="showShortcuts()" title="快捷键帮助 (?)">⌨️</div>
         <div class="comm-refresh-btn" onclick="refreshCommodities()">⟳ 刷新数据</div>
         <div class="comm-upd" id="commUpd">最后更新：--:--:--</div>
       </div>
@@ -552,8 +732,15 @@ async function go(i) {
       renderSR(s);
       renderAI(s);
       renderCharts(s);
+      // 蜡烛图
+      if (s.candles) renderCandleChart(s.candles, s.kdjK, s.kdjD, s.kdjJ, s.kdjLbls);
+      // 板块 + 资金（异步，不阻塞主渲染）
+      loadSectorInfo(code);
+      loadCapitalInfo(code);
     }
   } catch(e) { console.error('go:', e); }
+  // 财报日历（所有股票共用，每次进入股票视图刷新一次）
+  loadCalendar();
 }
 
 async function addStock() {
@@ -637,17 +824,22 @@ function renderInd(s) {
   const bbPos=s.bbPct<0.25?'接近下轨':s.bbPct>0.8?'接近上轨':'轨道中部';
   const volT=s.vr>1.5?'放量':s.vr<0.7?'缩量':'正常';
   function mc(c){return{pos:'c-pos',neg:'c-neg',neu:'c-neu',wrn:'c-wrn',acc:'c-acc',gld:'c-gld'}[c]||'';}
+  const kdjK = s.kdjK?.length ? s.kdjK[s.kdjK.length-1] : null;
+  const kdjD = s.kdjD?.length ? s.kdjD[s.kdjD.length-1] : null;
+  const kdjJ = s.kdjJ?.length ? s.kdjJ[s.kdjJ.length-1] : null;
   const metrics=[
     {l:'DIF',v:fmt(s.dif,3),s:macdZ,c:s.dif>0?'pos':'neg'},
     {l:'DEA',v:fmt(s.dea,3),s:macdX,c:s.dif>s.dea?'pos':'neg'},
     {l:'MACD柱',v:(s.hist>=0?'+':'')+fmt(s.hist,3),s:s.hist>0?'红柱':'绿柱',c:s.hist>0?'pos':'neg'},
     {l:'RSI 14',v:fmt(s.rsi,1),s:s.rsi<30?'超卖':s.rsi>70?'超买':'正常',c:s.rsi<30?'pos':s.rsi>70?'neg':'neu'},
+    {l:'KDJ-K',v:kdjK!==null?fmt(kdjK,1):'--',s:kdjK!==null?(kdjK<20?'超卖区域':kdjK>80?'超买区域':'正常'):'--',c:kdjK!==null?(kdjK<20?'pos':kdjK>80?'neg':'neu'):'neu'},
+    {l:'KDJ-J',v:kdjJ!==null?fmt(kdjJ,1):'--',s:kdjJ!==null?(kdjJ<0?'超卖极值':kdjJ>100?'超买极值':'正常'):'--',c:kdjJ!==null?(kdjJ<0?'pos':kdjJ>100?'neg':'neu'):'neu'},
+    {l:'VWAP',v:s.vwap?fmt(s.vwap,2):'--',s:s.vwap?(s.price>s.vwap?'价格在均价上↑':'价格在均价下↓'):'--',c:s.vwap?(s.price>s.vwap?'pos':'neg'):'neu'},
     {l:'布林位置',v:fmt(s.bbPct*100,0)+'%',s:bbPos,c:s.bbPct<0.3?'pos':s.bbPct>0.8?'neg':'neu'},
     {l:'布林带宽',v:fmt(s.bbW,2)+'%',s:'波动指数',c:'neu'},
     {l:'量比',v:fmt(s.vr,2),s:volT,c:s.vr>1.5?'wrn':'neu'},
     {l:'换手率',v:fmt(s.tr,2)+'%',s:'今日换手',c:'neu'},
     {l:'MA 5',v:fmt(s.ma5,2),s:s.price>s.ma5?'价格在上↑':'价格在下↓',c:s.price>s.ma5?'pos':'neg'},
-    {l:'MA 10',v:fmt(s.ma10,2),s:s.price>s.ma10?'价格在上↑':'价格在下↓',c:s.price>s.ma10?'pos':'neg'},
     {l:'MA 20',v:fmt(s.ma20,2),s:'中期趋势',c:'neu'},
     {l:'MA 60',v:fmt(s.ma60,2),s:'长期趋势',c:'neu'},
   ];
@@ -877,14 +1069,28 @@ function setCat(cat) {
   renderCommGrid();
 }
 
+function sparkline(prices, isUp) {
+  if (!prices || prices.length < 2) return '<div style="height:22px"></div>';
+  const min = Math.min(...prices), max = Math.max(...prices);
+  const range = max - min || 1;
+  const W = 76, H = 22;
+  const pts = prices.map((p,i) =>
+    `${(i/(prices.length-1)*W).toFixed(1)},${((1-(p-min)/range)*H).toFixed(1)}`
+  ).join(' ');
+  const color = isUp ? '#22c55e' : '#ef4444';
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="overflow:visible;display:block">
+    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/>
+  </svg>`;
+}
+
 function renderCommGrid() {
   const catColors = {
     '能源':'#E72D48', '贵金属':'#bd832c', '工业金属':'#91CFD5',
     '农产品':'#6CA984', '黑色系':'#F9B800', '外汇':'#7B68EE',
   };
-  const srcCls    = s => s==='wallstreetcn'?'src-wsn':s==='Yahoo'?'src-yahoo':s==='akshare'?'src-em':'src-fb';
-  const srcLabel  = s => s==='wallstreetcn'?'华尔街见闻':s==='Yahoo'?'Yahoo':s==='akshare'?'akshare':'备用数据';
-  const filtered  = _activeCat === '全部' ? COMMODITIES : COMMODITIES.filter(c => c.category === _activeCat);
+  const srcCls   = s => s==='wallstreetcn'?'src-wsn':s==='akshare'?'src-em':'src-fb';
+  const srcLabel = s => s==='wallstreetcn'?'华尔街见闻':s==='akshare'?'akshare':'备用';
+  const filtered = _activeCat==='全部' ? COMMODITIES : COMMODITIES.filter(c=>c.category===_activeCat);
   document.getElementById('commGrid').innerHTML = filtered.length
     ? filtered.map(c=>`
     <div class="comm-card ${selComm===c.code?'selected':''}" onclick="selectComm('${c.code}')">
@@ -893,9 +1099,471 @@ function renderCommGrid() {
       <div class="cc-price ${c.change_pct>=0?'pos':'neg'}">${fmt(c.price, c.price>100?2:4)}</div>
       <div class="cc-unit">${c.unit}</div>
       <div class="cc-change ${c.change_pct>=0?'pos':'neg'}">${sign(c.change_pct)}${fmt(c.change_pct,2)}%</div>
+      <div class="cc-spark">${sparkline(c.history, c.change_pct>=0)}</div>
       <div class="cc-source ${srcCls(c.source)}">${srcLabel(c.source)}</div>
     </div>`).join('')
     : '<div style="color:var(--t3);font-size:12px;padding:20px">该分类暂无数据</div>';
+}
+
+// ── 连接状态心跳 ─────────────────────────────────────────────
+let _lastHb = Date.now();
+async function heartbeat() {
+  try {
+    const r = await fetch('/api/status', {signal: AbortSignal.timeout(5000)});
+    if (r.ok) {
+      _lastHb = Date.now();
+      const dot = document.getElementById('connDot');
+      const lbl = document.getElementById('connLabel');
+      if (dot) dot.className = 'conn-dot ok';
+      if (lbl) lbl.textContent = '已连接';
+    }
+  } catch {
+    const elapsed = (Date.now() - _lastHb) / 1000;
+    const dot = document.getElementById('connDot');
+    const lbl = document.getElementById('connLabel');
+    if (dot) dot.className = elapsed > 30 ? 'conn-dot dead' : 'conn-dot slow';
+    if (lbl) lbl.textContent = elapsed > 30 ? '已断开' : '响应慢';
+  }
+}
+setInterval(heartbeat, 15000);
+
+// ── 价格预警 ─────────────────────────────────────────────────
+let _alertData = [];
+function toggleAlertPanel() {
+  const p = document.getElementById('alertPanel');
+  p.classList.toggle('open');
+  if (p.classList.contains('open')) loadAlerts();
+}
+async function loadAlerts() {
+  try {
+    const d = await fetch('/api/alerts').then(r=>r.json());
+    _alertData = d.alerts || [];
+    renderAlertList();
+    const active = _alertData.filter(a=>!a.triggered).length;
+    const badge = document.getElementById('alertBadge');
+    badge.textContent = active || '';
+    badge.style.display = active ? 'block' : 'none';
+  } catch {}
+}
+function renderAlertList() {
+  const el = document.getElementById('alertList');
+  if (!_alertData.length) {
+    el.innerHTML = '<div style="color:var(--t3);font-size:11px;padding:6px 0">暂无预警，在下方添加</div>';
+    return;
+  }
+  el.innerHTML = _alertData.map(a => `
+    <div class="alert-row">
+      <span style="flex:1;font-size:11px">${a.name||a.code}
+        <span style="color:var(--t3)">${a.direction==='above'?'≥':'≤'} ${a.threshold}</span></span>
+      ${a.triggered
+        ? `<span class="triggered" style="font-size:10px">✓触发</span>
+           <span style="cursor:pointer;color:var(--blue);font-size:10px;margin-left:4px" onclick="resetAlert('${a.id}')">重置</span>`
+        : '<span style="color:var(--t3);font-size:10px">监控中</span>'}
+      <span style="cursor:pointer;color:var(--t3);padding:0 6px;font-size:12px" onclick="deleteAlert('${a.id}')">✕</span>
+    </div>`).join('');
+}
+async function addAlert() {
+  const code = document.getElementById('aCode').value.trim();
+  const name = document.getElementById('aName').value.trim() || code;
+  const dir  = document.getElementById('aDir').value;
+  const thr  = parseFloat(document.getElementById('aThr').value);
+  const type = document.getElementById('aType').value;
+  if (!code || !thr) { showToast('请填写代码和目标价格', 'warn'); return; }
+  await fetch('/api/alerts', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({code, name, direction:dir, threshold:thr, type})});
+  document.getElementById('aCode').value = '';
+  document.getElementById('aThr').value  = '';
+  showToast(`✓ 预警已添加：${name} ${dir==='above'?'≥':'≤'} ${thr}`);
+  loadAlerts();
+}
+async function deleteAlert(id) {
+  await fetch(`/api/alerts/${id}`, {method:'DELETE'});
+  loadAlerts();
+}
+async function resetAlert(id) {
+  await fetch(`/api/alerts/reset/${id}`, {method:'POST'});
+  loadAlerts();
+}
+async function pollTriggered() {
+  try {
+    const d = await fetch('/api/alerts/triggered').then(r=>r.json());
+    if (d.triggered && d.triggered.length) {
+      d.triggered.forEach(t => {
+        showToast(`🔔 ${t.name}(${t.code}) ${t.direction==='above'?'高于':'低于'} ${t.threshold}，当前 ${t.price}`, 'warn');
+        if ('Notification' in window && Notification.permission === 'granted')
+          new Notification('StockMonitor 预警', {
+            body: `${t.name} 价格 ${t.price} 已${t.direction==='above'?'高于':'低于'}目标 ${t.threshold}`
+          });
+      });
+      loadAlerts();
+    }
+  } catch {}
+}
+setInterval(pollTriggered, 30000);
+if ('Notification' in window && Notification.permission === 'default')
+  Notification.requestPermission();
+
+// ── 市场总结 ─────────────────────────────────────────────────
+async function triggerSummary() {
+  document.getElementById('summaryModal').classList.add('open');
+  document.getElementById('summaryDate').textContent = 'AI 分析中，请稍候（约 10-20 秒）…';
+  document.getElementById('summaryContent').textContent = '';
+  try {
+    const r = await fetch('/api/market/summary', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body:'{}'});
+    const d = await r.json();
+    if (d.ok) {
+      document.getElementById('summaryDate').textContent =
+        d.date + '  生成于 ' + (d.generated_at||'').substring(11,19);
+      document.getElementById('summaryContent').textContent = d.summary;
+    } else {
+      document.getElementById('summaryDate').textContent = '生成失败';
+      document.getElementById('summaryContent').textContent = d.error || '请检查 AI Key 配置';
+    }
+  } catch(e) {
+    document.getElementById('summaryContent').textContent = '网络错误：' + e.message;
+  }
+}
+
+// ── 导出 Excel ───────────────────────────────────────────────
+function triggerExport() {
+  showToast('⏳ 正在生成 Excel…');
+  const a = document.createElement('a');
+  a.href = '/api/export';
+  a.download = '';
+  a.click();
+}
+
+// ══════════════════════════════════════════════════════════
+//  ECharts 蜡烛图（K线）
+// ══════════════════════════════════════════════════════════
+let _candleChart = null;
+let _kdjChart    = null;
+let _allCandles  = [];
+let _candleRange = 20;
+
+function initCandleChart() {
+  const el = document.getElementById('candleChart');
+  if (!el || typeof echarts === 'undefined') return;
+  if (_candleChart) _candleChart.dispose();
+  _candleChart = echarts.init(el, null, {renderer: 'canvas'});
+}
+
+function initKdjChart() {
+  const el = document.getElementById('kdjChart');
+  if (!el || typeof echarts === 'undefined') return;
+  if (_kdjChart) _kdjChart.dispose();
+  _kdjChart = echarts.init(el, null, {renderer: 'canvas'});
+}
+
+function getEChartColors() {
+  const light = document.body.classList.contains('light');
+  return {
+    text:     light ? 'rgba(26,26,46,0.5)'   : 'rgba(245,239,234,0.45)',
+    axis:     light ? 'rgba(26,26,46,0.1)'   : 'rgba(255,255,255,0.08)',
+    tooltip:  light ? '#ffffff' : '#1a1d24',
+    tooltipBorder: light ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.1)',
+  };
+}
+
+function setCandleRange(n, el) {
+  _candleRange = n;
+  document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
+  if (el) el.classList.add('active');
+  renderCandleChart();
+}
+
+function renderCandleChart(candles, kdjK, kdjD, kdjJ, kdjLbls) {
+  if (candles) _allCandles = candles;
+  if (!_allCandles.length) return;
+
+  if (!_candleChart) initCandleChart();
+  if (!_kdjChart)    initKdjChart();
+
+  const data   = _allCandles.slice(-_candleRange);
+  const dates  = data.map(d => d[0]);
+  const ohlc   = data.map(d => [d[1], d[2], d[3], d[4]]);  // open,close,low,high
+  const vols   = data.map(d => d[5]);
+  const clrs   = data.map(d => d[2] >= d[1] ? '#E72D48' : '#6CA984');
+  const C      = getEChartColors();
+
+  const baseAxis = {
+    type: 'category', data: dates, boundaryGap: true,
+    axisLine:  {lineStyle: {color: C.axis}},
+    axisLabel: {color: C.text, fontSize: 9},
+    splitLine: {show: false},
+  };
+
+  // ── 蜡烛图 ─────────────────────────────────────────────
+  _candleChart.setOption({
+    backgroundColor: 'transparent',
+    animation: false,
+    grid: [
+      {left:50, right:16, top:10,   bottom:70},  // 价格
+      {left:50, right:16, top:'72%', bottom:20}, // 成交量
+    ],
+    xAxis: [
+      {...baseAxis, gridIndex:0, axisLabel:{show:false}},
+      {...baseAxis, gridIndex:1},
+    ],
+    yAxis: [
+      {gridIndex:0, scale:true, splitNumber:4,
+       axisLabel:{color:C.text, fontSize:9},
+       splitLine:{lineStyle:{color:C.axis, type:'dashed'}}},
+      {gridIndex:1, splitNumber:2, axisLabel:{show:false}, splitLine:{show:false}},
+    ],
+    tooltip: {
+      trigger:'axis', axisPointer:{type:'cross'},
+      backgroundColor: C.tooltip, borderColor: C.tooltipBorder,
+      textStyle:{color: document.body.classList.contains('light') ? '#1a1a2e' : '#F5EFEA', fontSize:11},
+      formatter(params) {
+        const c = params.find(p => p.seriesName === 'K线');
+        if (!c) return '';
+        const [o,cl,lo,hi] = c.value;
+        return `<b>${c.axisValue}</b><br>开 ${o}  收 ${cl}<br>高 ${hi}  低 ${lo}`;
+      }
+    },
+    dataZoom: [
+      {type:'inside', xAxisIndex:[0,1], start:0, end:100},
+      {type:'slider', xAxisIndex:[0,1], bottom:2, height:16,
+       fillerColor:'rgba(230,57,124,0.12)', borderColor:'transparent',
+       textStyle:{color:C.text, fontSize:8}},
+    ],
+    series: [
+      {
+        name:'K线', type:'candlestick',
+        xAxisIndex:0, yAxisIndex:0,
+        data: ohlc,
+        itemStyle:{
+          color:'#E72D48', color0:'#6CA984',
+          borderColor:'#E72D48', borderColor0:'#6CA984',
+        },
+      },
+      {
+        name:'成交量', type:'bar', xAxisIndex:1, yAxisIndex:1,
+        data: vols,
+        itemStyle:{color:(p) => clrs[p.dataIndex]},
+        barMaxWidth:8,
+      },
+    ],
+  }, true);
+
+  // ── KDJ ────────────────────────────────────────────────
+  if (!kdjK) return;
+  const kDates = kdjLbls || dates;
+  _kdjChart.setOption({
+    backgroundColor: 'transparent',
+    animation: false,
+    grid: {left:50, right:16, top:6, bottom:24},
+    xAxis: {
+      type:'category', data: kDates,
+      axisLine:{lineStyle:{color:C.axis}},
+      axisLabel:{color:C.text, fontSize:9},
+      splitLine:{show:false},
+    },
+    yAxis: {
+      min:0, max:100, splitNumber:3,
+      axisLabel:{color:C.text, fontSize:9},
+      splitLine:{lineStyle:{color:C.axis, type:'dashed'}},
+    },
+    tooltip: {
+      trigger:'axis',
+      backgroundColor:C.tooltip, borderColor:C.tooltipBorder,
+      textStyle:{fontSize:10, color: document.body.classList.contains('light') ? '#1a1a2e' : '#F5EFEA'},
+    },
+    legend: {
+      data:['K','D','J'], top:0, right:0,
+      textStyle:{color:C.text, fontSize:9},
+    },
+    // 超买/超卖参考线
+    markLine: {silent:true},
+    series: [
+      {name:'K', type:'line', data:kdjK, smooth:true,
+       lineStyle:{color:'#F9B800',width:1.2}, symbol:'none',
+       markLine:{data:[{yAxis:80,lineStyle:{color:'rgba(231,45,72,0.3)'}},
+                       {yAxis:20,lineStyle:{color:'rgba(108,169,132,0.3)'}}]}},
+      {name:'D', type:'line', data:kdjD, smooth:true,
+       lineStyle:{color:'#91CFD5',width:1.2}, symbol:'none'},
+      {name:'J', type:'line', data:kdjJ, smooth:true,
+       lineStyle:{color:'#E6397C',width:1, type:'dashed'}, symbol:'none'},
+    ],
+  }, true);
+}
+
+// ══════════════════════════════════════════════════════════
+//  主题切换
+// ══════════════════════════════════════════════════════════
+function toggleTheme() {
+  const light = document.body.classList.toggle('light');
+  document.getElementById('themeBtn').textContent = light ? '🌙' : '☀️';
+  localStorage.setItem('theme', light ? 'light' : 'dark');
+  // ECharts 需要重绘
+  if (_candleChart) _candleChart.resize();
+  if (_kdjChart)    _kdjChart.resize();
+  renderCandleChart();
+}
+
+// 启动时恢复主题
+(function() {
+  if (localStorage.getItem('theme') === 'light') {
+    document.body.classList.add('light');
+    const btn = document.getElementById('themeBtn');
+    if (btn) btn.textContent = '☀️';
+  }
+})();
+
+// ══════════════════════════════════════════════════════════
+//  键盘快捷键
+// ══════════════════════════════════════════════════════════
+function showShortcuts() {
+  document.getElementById('shortcutModal').classList.add('open');
+}
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  switch (e.key) {
+    case '/':
+      e.preventDefault();
+      document.getElementById('search')?.focus();
+      break;
+    case 'T': case 't':
+      toggleTheme(); break;
+    case 'C': case 'c':
+      switchTab?.('comm'); break;
+    case 'R': case 'r':
+      if (sel) refreshStock(sel); break;
+    case 'E': case 'e':
+      triggerExport(); break;
+    case '?':
+      showShortcuts(); break;
+    case 'Escape':
+      document.querySelectorAll('.alert-panel.open,.summary-modal.open,.shortcut-modal.open')
+        .forEach(el => el.classList.remove('open'));
+      break;
+    default:
+      if (e.key >= '1' && e.key <= '9') {
+        const stocks = document.querySelectorAll('.stock-item');
+        const target = stocks[parseInt(e.key) - 1];
+        if (target) target.click();
+      }
+  }
+});
+
+// ══════════════════════════════════════════════════════════
+//  板块联动
+// ══════════════════════════════════════════════════════════
+async function loadSectorInfo(code) {
+  try {
+    const r = await fetch(`/api/stock/${code}/sector`);
+    const d = await r.json();
+    if (!d.ok) { hideSectorPanel(); return; }
+    renderSectorPanel(d.sector);
+  } catch { hideSectorPanel(); }
+}
+
+function hideSectorPanel() {
+  document.getElementById('sectorPanel').style.display = 'none';
+}
+
+function renderSectorPanel(s) {
+  if (!s || !s.industry) { hideSectorPanel(); return; }
+  document.getElementById('sectorPanel').style.display = '';
+
+  const pct = s.industry_change_pct;
+  const pctStr = pct !== null
+    ? `<span class="${pct>=0?'pos':'neg'}">${pct>=0?'+':''}${(pct||0).toFixed(2)}%</span>`
+    : '';
+
+  const peers = (s.peers || []).map(p => `
+    <div class="peer-row">
+      <span style="color:var(--t3);font-size:10px">${p.code}</span>
+      <span style="flex:1;margin:0 8px">${p.name}</span>
+      <span class="${p.change_pct>=0?'pos':'neg'}">${p.price}
+        (${p.change_pct>=0?'+':''}${(p.change_pct||0).toFixed(2)}%)</span>
+    </div>`).join('');
+
+  document.getElementById('sectorContent').innerHTML = `
+    <div class="sector-name">${s.industry}  ${pctStr}</div>
+    <div style="font-size:10px;color:var(--t3);margin-bottom:6px">同板块主要成分股</div>
+    ${peers || '<div style="color:var(--t3);font-size:11px">暂无成分股数据</div>'}`;
+}
+
+// ══════════════════════════════════════════════════════════
+//  北向资金 + 融资融券
+// ══════════════════════════════════════════════════════════
+async function loadCapitalInfo(code) {
+  try {
+    const [nr, mr] = await Promise.all([
+      fetch('/api/market/northbound').then(r=>r.json()),
+      fetch(`/api/stock/${code}/margin`).then(r=>r.json()),
+    ]);
+    renderCapitalPanel(nr.northbound, mr.margin);
+  } catch { }
+}
+
+function renderCapitalPanel(north, margin) {
+  const el = document.getElementById('capitalContent');
+  if (!north && !margin) { el.innerHTML = '<span style="color:var(--t3);font-size:11px">数据暂不可用</span>'; return; }
+
+  const northHtml = north?.today_net !== null ? `
+    <div class="capital-card">
+      <div class="capital-lbl">北向资金 今日净流入</div>
+      <div class="capital-val ${(north.today_net||0)>=0?'pos':'neg'}">
+        ${(north.today_net||0)>=0?'+':''}${(north.today_net||0).toFixed(1)} 亿
+      </div>
+      <div style="font-size:9px;color:var(--t3);margin-top:3px">
+        近5日 ${(north['5day_net']||0)>=0?'+':''}${(north['5day_net']||0).toFixed(1)} 亿
+      </div>
+    </div>` : '';
+
+  const fmtB = v => v ? `${(v/1e8).toFixed(2)} 亿` : '--';
+  const marginHtml = margin?.margin_balance ? `
+    <div class="capital-card">
+      <div class="capital-lbl">融资余额</div>
+      <div class="capital-val">${fmtB(margin.margin_balance)}</div>
+      <div style="font-size:9px;color:var(--t3);margin-top:3px">融券 ${fmtB(margin.short_balance)}</div>
+    </div>` : '';
+
+  el.innerHTML = `<div class="capital-row">${northHtml}${marginHtml}</div>`;
+}
+
+// ══════════════════════════════════════════════════════════
+//  财报日历
+// ══════════════════════════════════════════════════════════
+async function loadCalendar() {
+  try {
+    const r = await fetch('/api/calendar');
+    const d = await r.json();
+    if (!d.ok || !d.events.length) {
+      document.getElementById('calendarPanel').style.display = 'none'; return;
+    }
+    renderCalendar(d.events);
+  } catch {
+    document.getElementById('calendarPanel').style.display = 'none';
+  }
+}
+
+function renderCalendar(events) {
+  const panel = document.getElementById('calendarPanel');
+  if (!events.length) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+
+  const items = events.slice(0, 8).map(ev => {
+    const dl    = ev.days_left;
+    const cls   = ev.status === 'today' ? 'today' : dl < 0 ? 'overdue' : dl <= 7 ? 'soon' : 'future';
+    const label = ev.status === 'today' ? '今天' : dl < 0 ? `${-dl}天前` : `${dl}天后`;
+    return `
+      <div class="cal-event">
+        <div class="cal-days ${cls}">${label}</div>
+        <span style="color:var(--t3);font-size:10px;min-width:55px">${ev.code}</span>
+        <span style="flex:1">${ev.name}</span>
+        <span style="color:var(--t2);font-size:10px">${ev.event}</span>
+        <span style="color:var(--t3);font-size:10px;min-width:70px;text-align:right">${ev.date}</span>
+      </div>`;
+  }).join('');
+
+  document.getElementById('calendarContent').innerHTML = items;
 }
 
 function selectComm(code) {
@@ -1027,7 +1695,80 @@ async function pollLoop() {
 
   // 初始加载大宗商品（用于滚动条）
   loadCommodities();
+
+  // ECharts 初始化 + 窗口resize自动重绘
+  initCandleChart();
+  initKdjChart();
+  window.addEventListener('resize', () => {
+    _candleChart?.resize();
+    _kdjChart?.resize();
+  });
+
+  // 加载预警列表
+  loadAlerts();
 })();
 </script>
+
+<!-- ══════════════════════════════════════════════════════
+     오버레이 패널 (모두 body 닫기 전에 위치)
+     All overlay panels - before </body>
+     ══════════════════════════════════════════════════════ -->
+
+<!-- 预警面板 -->
+<div class="alert-panel" id="alertPanel">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <span style="font-size:14px;font-weight:600">🔔 价格预警</span>
+    <span style="font-size:12px;color:var(--t3);cursor:pointer" onclick="toggleAlertPanel()">✕</span>
+  </div>
+  <div id="alertList" style="max-height:200px;overflow-y:auto;margin-bottom:10px"></div>
+  <div style="font-size:11px;color:var(--t3);margin-bottom:6px">添加新预警</div>
+  <div class="alert-add-form">
+    <input id="aCode" placeholder="代码 e.g. 600519" style="width:110px">
+    <input id="aName" placeholder="名称（可选）" style="width:90px">
+    <select id="aDir">
+      <option value="above">高于</option>
+      <option value="below">低于</option>
+    </select>
+    <input id="aThr" type="number" placeholder="目标价格" style="width:90px">
+    <select id="aType">
+      <option value="stock">股票</option>
+      <option value="commodity">商品</option>
+    </select>
+    <button onclick="addAlert()">＋ 添加</button>
+  </div>
+</div>
+
+<!-- 市场总结弹窗 -->
+<div class="summary-modal" id="summaryModal">
+  <div class="summary-box">
+    <h3>📝 每日市场总结</h3>
+    <div class="summary-date" id="summaryDate">生成中…</div>
+    <div class="summary-content" id="summaryContent">AI 正在分析今日市场数据，请稍候…</div>
+    <div class="summary-close">
+      <button onclick="document.getElementById('summaryModal').classList.remove('open')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 快捷键帮助弹窗 -->
+<div class="shortcut-modal" id="shortcutModal" onclick="this.classList.remove('open')">
+  <div class="shortcut-box" onclick="event.stopPropagation()">
+    <h3>⌨️ 键盘快捷键</h3>
+    <div class="sk-row"><span>切换亮/暗主题</span><span class="sk-key">T</span></div>
+    <div class="sk-row"><span>跳到大宗商品页</span><span class="sk-key">C</span></div>
+    <div class="sk-row"><span>刷新当前股票</span><span class="sk-key">R</span></div>
+    <div class="sk-row"><span>导出 Excel</span><span class="sk-key">E</span></div>
+    <div class="sk-row"><span>聚焦搜索框</span><span class="sk-key">/</span></div>
+    <div class="sk-row"><span>切换股票（第1~9只）</span><span class="sk-key">1–9</span></div>
+    <div class="sk-row"><span>显示/关闭帮助</span><span class="sk-key">?</span></div>
+    <div class="sk-row"><span>关闭所有弹窗</span><span class="sk-key">Esc</span></div>
+    <div style="margin-top:14px;text-align:right">
+      <button onclick="document.getElementById('shortcutModal').classList.remove('open')"
+              style="padding:5px 16px;border-radius:6px;border:1px solid var(--border);
+                     background:transparent;color:var(--t2);cursor:pointer;font-size:12px">关闭</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>

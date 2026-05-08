@@ -23,6 +23,8 @@ def calc_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = _calc_ma(df)
     df = _calc_volume_indicators(df)
     df = _calc_rsi(df)
+    df = _calc_kdj(df)
+    df = _calc_vwap(df)
     return df
 
 
@@ -110,6 +112,45 @@ def _calc_rsi(df: pd.DataFrame, period=14) -> pd.DataFrame:
 
 
 # ────────────────────────────────────────────────────────────────
+#  KDJ（随机指标）
+# ────────────────────────────────────────────────────────────────
+
+def _calc_kdj(df: pd.DataFrame, n: int = 9) -> pd.DataFrame:
+    """
+    KDJ 随机指标（9日标准参数）
+    K < 20 超卖；K > 80 超买；J 为最灵敏的超买超卖信号
+    """
+    low_min  = df["low"].rolling(window=n, min_periods=1).min()
+    high_max = df["high"].rolling(window=n, min_periods=1).max()
+    denom    = high_max - low_min
+    rsv      = np.where(denom > 0, (df["close"] - low_min) / denom * 100, 50.0)
+    rsv_s    = pd.Series(rsv, index=df.index)
+    # 使用 1/3 平滑系数（alpha=1/3）
+    K = rsv_s.ewm(alpha=1/3, adjust=False).mean()
+    D = K.ewm(alpha=1/3, adjust=False).mean()
+    J = 3 * K - 2 * D
+    df["kdj_k"] = K.round(2)
+    df["kdj_d"] = D.round(2)
+    df["kdj_j"] = J.round(2)
+    return df
+
+
+# ────────────────────────────────────────────────────────────────
+#  VWAP（成交量加权均价）
+# ────────────────────────────────────────────────────────────────
+
+def _calc_vwap(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    VWAP = Σ(典型价 × 成交量) / Σ成交量
+    价格站上 VWAP 为多头占优；跌破为空头占优
+    """
+    typical = (df["high"] + df["low"] + df["close"]) / 3
+    df["vwap"] = (typical * df["volume"]).cumsum() / df["volume"].cumsum()
+    df["vwap"] = df["vwap"].round(2)
+    return df
+
+
+# ────────────────────────────────────────────────────────────────
 #  辅助：获取最近 N 根 K 线快照（用于 AI prompt）
 # ────────────────────────────────────────────────────────────────
 
@@ -122,6 +163,8 @@ def get_recent_snapshot(df: pd.DataFrame, n: int = 10) -> list[dict]:
         "bb_upper", "bb_mid", "bb_lower", "bb_pct",
         "ma5", "ma10", "ma20", "ma60",
         "vol_ratio", "rsi",
+        "kdj_k", "kdj_d", "kdj_j",
+        "vwap", "obv",
     ]
     available = [c for c in cols if c in df.columns]
     recent = df[available].tail(n).copy()

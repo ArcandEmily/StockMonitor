@@ -21,13 +21,14 @@ import time
 import threading
 import datetime
 import traceback
+from pathlib import Path
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 
 from flask import Flask, jsonify, request, send_from_directory
 
 # ── 项目模块 ───────────────────────────────────────────────────
 try:
-    from dotenv import load_dotenv
-    load_dotenv()
     from config import Config
     from fetcher import fetch_kline, fetch_stock_info
     from indicators import calc_indicators
@@ -38,6 +39,137 @@ try:
 except ImportError as e:
     print(f"[警告] 部分模块未安装，将使用 Demo 数据: {e}")
     HAS_MODULES = False
+
+# ── 大宗商品模块 ───────────────────────────────────────────────
+try:
+    from commodity_fetcher import commodity_fetcher
+    from commodity_ai import CommodityAIAdvisor
+    HAS_COMMODITY = True
+except ImportError as e:
+    print(f"[警告] 大宗商品模块未找到: {e}")
+    HAS_COMMODITY = False
+
+# ── 板块/资金/日历模块（可选）──────────────────────────────────
+try:
+    from sector_fetcher   import get_sector_info
+    from capital_fetcher  import get_northbound, get_margin
+    from calendar_fetcher import get_upcoming_events
+    HAS_EXTRA = True
+except ImportError as e:
+    print(f"[警告] 扩展模块未找到: {e}")
+    HAS_EXTRA = False
+
+# 大宗商品全局状态
+_commodity_analysis: dict = {}
+_analysis_lock = threading.Lock()
+_analysis_loading = threading.Event()
+
+# ── 持久化文件路径 ─────────────────────────────────────────────
+WATCHLIST_FILE     = Path("watchlist.json")
+ANALYSIS_CACHE_FILE = Path("analysis_cache.json")
+ALERTS_FILE        = Path("alerts.json")
+
+# ── 大宗商品价格历史（用于 Sparkline）─────────────────────────
+# {code: deque([p1,p2,...], maxlen=24)}  每5分钟一个点，最多2小时
+_price_history: dict = {}
+_history_lock = threading.Lock()
+
+# ── 价格预警 ───────────────────────────────────────────────────
+# [{id,type,code,name,direction:'above'|'below',threshold,triggered,triggered_at}]
+_alerts: list = []
+_alerts_lock = threading.Lock()
+_triggered_queue: list = []   # 已触发待通知列表
+
+
+# ══════════════════════════════════════════════════════════════
+#  持久化工具函数
+# ══════════════════════════════════════════════════════════════
+
+def _load_watchlist(default_codes: list) -> list:
+    """从 watchlist.json 加载自选股列表，不存在则用 .env 默认值"""
+    try:
+        if WATCHLIST_FILE.exists():
+            data = json.loads(WATCHLIST_FILE.read_text(encoding="utf-8"))
+            codes = [c.strip() for c in data.get("codes", []) if c.strip()]
+            if codes:
+                print(f"[自选股] 从 watchlist.json 加载 {len(codes)} 只")
+                return codes
+    except Exception as e:
+        print(f"[自选股] 读取失败，使用默认: {e}")
+    return default_codes
+
+def _save_watchlist(codes: list):
+    try:
+        WATCHLIST_FILE.write_text(
+            json.dumps({"codes": codes, "updated_at": datetime.datetime.now().isoformat()},
+                       ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+    except Exception as e:
+        print(f"[自选股] 保存失败: {e}")
+
+def _load_analysis_cache() -> dict:
+    """加载大宗商品 AI 分析缓存（24小时内有效）"""
+    try:
+        if ANALYSIS_CACHE_FILE.exists():
+            data = json.loads(ANALYSIS_CACHE_FILE.read_text(encoding="utf-8"))
+            saved = datetime.datetime.fromisoformat(data.get("saved_at", "2000-01-01"))
+            age_h = (datetime.datetime.now() - saved).total_seconds() / 3600
+            if age_h < 24:
+                print(f"[缓存] 加载 AI 分析缓存（{age_h:.1f}小时前）")
+                return data.get("analysis", {})
+    except Exception as e:
+        print(f"[缓存] 读取失败: {e}")
+    return {}
+
+def _save_analysis_cache(analysis: dict):
+    try:
+        ANALYSIS_CACHE_FILE.write_text(
+            json.dumps({"saved_at": datetime.datetime.now().isoformat(), "analysis": analysis},
+                       ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+    except Exception as e:
+        print(f"[缓存] 保存失败: {e}")
+
+def _load_alerts():
+    global _alerts
+    try:
+        if ALERTS_FILE.exists():
+            _alerts = json.loads(ALERTS_FILE.read_text(encoding="utf-8"))
+            print(f"[预警] 加载 {len(_alerts)} 条预警规则")
+    except Exception as e:
+        print(f"[预警] 加载失败: {e}")
+        _alerts = []
+
+def _save_alerts():
+    try:
+        with _alerts_lock:
+            data = list(_alerts)
+        ALERTS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[预警] 保存失败: {e}")
+
+def _check_alerts(code: str, name: str, price: float):
+    """检查价格预警，触发时加入通知队列"""
+    with _alerts_lock:
+        for alert in _alerts:
+            if alert.get("code") != code or alert.get("triggered"):
+                continue
+            thr = float(alert.get("threshold", 0))
+            direction = alert.get("direction", "above")
+            hit = (direction == "above" and price >= thr) or \
+                  (direction == "below" and price <= thr)
+            if hit:
+                alert["triggered"] = True
+                alert["triggered_at"] = datetime.datetime.now().isoformat()
+                _triggered_queue.append({
+                    "code": code, "name": name, "price": price,
+                    "direction": direction, "threshold": thr,
+                    "triggered_at": alert["triggered_at"],
+                })
+                print(f"[预警] ★ {name}({code}) 价格 {price} {direction} {thr}")
+    _save_alerts()
 
 # ══════════════════════════════════════════════════════════════
 #  Demo 数据（无依赖时使用）
@@ -124,22 +256,23 @@ _loading: set = set()   # 正在加载中的代码
 
 
 def _init_stocks():
-    """初始化：优先读 .env 配置，否则用 Demo 数据"""
+    """初始化：优先读 watchlist.json，否则读 .env，最后用 Demo 数据"""
     global _stocks
     if HAS_MODULES:
         try:
             cfg = Config()
-            _stocks = {}
-            for code in cfg.stock_codes:
-                _stocks[code] = {"code": code, "name": code, "loading": True}
-            # 后台线程拉取数据
-            for code in list(cfg.stock_codes):
-                t = threading.Thread(target=_fetch_stock, args=(code,), daemon=True)
-                t.start()
+            codes = _load_watchlist(cfg.stock_codes)
+            _stocks = {code: {"code": code, "name": code, "loading": True} for code in codes}
+            # 并发拉取，最多 5 个同时进行
+            def _fetch_with_delay(args):
+                idx, code = args
+                time.sleep(idx * 0.5)   # 错开 0.5s，避免瞬间并发过高
+                _fetch_stock(code)
+            with ThreadPoolExecutor(max_workers=5) as ex:
+                ex.map(_fetch_with_delay, enumerate(codes))
             return
         except Exception as e:
             print(f"[警告] 读取 Config 失败，使用 Demo 数据: {e}")
-
     _stocks = dict(DEMO_STOCKS)
 
 
@@ -188,6 +321,8 @@ def _fetch_stock(code: str) -> dict:
                     temperature=cfg.ai_temperature,
                     max_tokens=cfg.ai_max_tokens,
                     timeout=cfg.ai_timeout,
+                    enable_thinking=cfg.enable_thinking,
+                    thinking_effort=cfg.thinking_effort,
                 )
                 prompt = build_prompt(
                     symbol=code,
@@ -259,11 +394,37 @@ def _fetch_stock(code: str) -> dict:
             "aiTShort": result.ai_target_short,
             "aiTLong": result.ai_target_long,
 
-            # 图表数据（最近10根）
+            # 图表数据（最近10根，用于 MACD 图）
             "macdD":  df["dif"].tail(10).fillna(0).round(4).tolist(),
             "deaD":   df["dea"].tail(10).fillna(0).round(4).tolist(),
             "priceD": df["close"].tail(10).round(2).tolist(),
             "lbls":   df["date"].tail(10).dt.strftime("%m/%d").tolist(),
+
+            # K 线蜡烛图数据（最近 60 根，ECharts candlestick 格式）
+            # 每条：[日期, 开盘, 收盘, 最低, 最高, 成交量]
+            "candles": [
+                [
+                    row["date"].strftime("%m/%d"),
+                    round(float(row["open"]),   2),
+                    round(float(row["close"]),  2),
+                    round(float(row["low"]),    2),
+                    round(float(row["high"]),   2),
+                    int(row.get("volume", 0)),
+                ]
+                for _, row in df.tail(60).iterrows()
+            ],
+
+            # KDJ（最近 30 根）
+            "kdjK": df["kdj_k"].tail(30).fillna(50).round(2).tolist() if "kdj_k" in df.columns else [],
+            "kdjD": df["kdj_d"].tail(30).fillna(50).round(2).tolist() if "kdj_d" in df.columns else [],
+            "kdjJ": df["kdj_j"].tail(30).fillna(50).round(2).tolist() if "kdj_j" in df.columns else [],
+            "kdjLbls": df["date"].tail(30).dt.strftime("%m/%d").tolist(),
+
+            # VWAP 最新值
+            "vwap": _pv(last, "vwap"),
+
+            # OBV 趋势（最近10根，判断量能）
+            "obvD": df["obv"].tail(10).fillna(0).round(0).tolist() if "obv" in df.columns else [],
 
             "updatedAt": datetime.datetime.now().isoformat(),
             "loading": False,
@@ -272,6 +433,9 @@ def _fetch_stock(code: str) -> dict:
 
         with _lock:
             _stocks[code] = stock_data
+
+        # 检查价格预警
+        _check_alerts(code, info.get("name", code), price)
 
         print(f"[{code}] ✓ 数据更新完成  价格={price}  决策={result.final_decision}")
         return stock_data
@@ -380,6 +544,8 @@ def api_add():
                 "updatedAt": datetime.datetime.now().isoformat(),
             }
 
+    with _lock:
+        _save_watchlist(list(_stocks.keys()))
     return jsonify({"ok": True, "code": code, "message": "已加入监控，数据加载中…"})
 
 
@@ -396,6 +562,7 @@ def api_remove():
         if len(_stocks) <= 1:
             return jsonify({"ok": False, "error": "至少保留一只股票"}), 400
         del _stocks[code]
+    _save_watchlist([c for c in _stocks.keys()])
     return jsonify({"ok": True})
 
 
@@ -437,10 +604,413 @@ def api_status():
     return jsonify({
         "ok": True,
         "mode": "real" if HAS_MODULES else "demo",
+        "commodity": HAS_COMMODITY,
+        "commodity_ready": bool(_commodity_analysis),
+        "commodity_loading": _analysis_loading.is_set(),
         "stocks": len(_stocks),
         "loading": list(_loading),
         "time": datetime.datetime.now().isoformat(),
     })
+
+
+# ══════════════════════════════════════════════════════════════
+#  大宗商品：后台抓取 + AI 分析
+# ══════════════════════════════════════════════════════════════
+
+def _get_commodity_advisor():
+    """获取大宗商品 AI 分析器（无 key 时返回 None）"""
+    if not HAS_COMMODITY:
+        return None
+    try:
+        if not HAS_MODULES:
+            return None
+        cfg = Config()
+        if not cfg.enable_ai or not cfg.ai_api_key:
+            return None
+        return CommodityAIAdvisor(
+            api_key=cfg.ai_api_key,
+            base_url=cfg.ai_base_url,
+            model=cfg.ai_model,
+            temperature=0.3,
+            max_tokens=2000,
+            timeout=90,
+            enable_thinking=cfg.enable_thinking,
+            thinking_effort=cfg.thinking_effort,
+        )
+    except Exception:
+        return None
+
+
+def _refresh_commodity_analysis():
+    """后台线程：拉取大宗商品行情 + AI 分析"""
+    if not HAS_COMMODITY:
+        return
+    if _analysis_loading.is_set():
+        return
+    _analysis_loading.set()
+    try:
+        commodities = commodity_fetcher.fetch_all()
+        advisor = _get_commodity_advisor()
+        if advisor:
+            analysis = advisor.analyze(commodities)
+        else:
+            # 无 AI key 时使用规则引擎兜底
+            analysis = CommodityAIAdvisor("", "", "").analyze(commodities)
+        with _analysis_lock:
+            _commodity_analysis.clear()
+            _commodity_analysis.update(analysis)
+            _commodity_analysis["commodities"] = commodities
+
+        # 保存 AI 分析缓存
+        _save_analysis_cache(dict(_commodity_analysis))
+
+        # 更新价格历史（Sparkline 数据源）
+        with _history_lock:
+            for c in commodities:
+                code = c["code"]
+                if code not in _price_history:
+                    _price_history[code] = deque(maxlen=24)
+                _price_history[code].append(round(float(c["price"]), 4))
+
+        # 检查大宗商品价格预警
+        for c in commodities:
+            _check_alerts(c["code"], c["name"], float(c["price"]))
+
+        print(f"[大宗] ✓ {len(commodities)} 个品种，来源分布: "
+              f"{set(c['source'] for c in commodities)}")
+    except Exception as e:
+        print(f"[大宗] ✗ {e}")
+        import traceback; traceback.print_exc()
+    finally:
+        _analysis_loading.clear()
+
+
+# ── API: 大宗商品实时行情 ────────────────────────────────────
+@app.route("/api/commodities")
+def api_commodities():
+    if not HAS_COMMODITY:
+        return jsonify({"ok": False, "error": "commodity_fetcher 模块未找到"}), 500
+    try:
+        data = commodity_fetcher.get_cached()
+        if not data:
+            threading.Thread(target=_refresh_commodity_analysis, daemon=True).start()
+            return jsonify({"ok": True, "commodities": [], "loading": True})
+        # 附加价格历史
+        with _history_lock:
+            for item in data:
+                item["history"] = list(_price_history.get(item["code"], []))
+        return jsonify({"ok": True, "commodities": data, "loading": False})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ── API: AI 产业影响分析 ─────────────────────────────────────
+@app.route("/api/commodity/analysis")
+def api_commodity_analysis():
+    if not HAS_COMMODITY:
+        return jsonify({"ok": False, "error": "commodity_ai 模块未找到"}), 500
+    with _analysis_lock:
+        if not _commodity_analysis:
+            threading.Thread(target=_refresh_commodity_analysis, daemon=True).start()
+            return jsonify({
+                "ok": True, "loading": True, "analysis": None,
+                "message": "AI 分析生成中，约 15-30 秒后刷新…",
+            })
+        return jsonify({
+            "ok": True,
+            "loading": _analysis_loading.is_set(),
+            "analysis": dict(_commodity_analysis),
+        })
+
+
+# ── API: 强制刷新大宗商品 ────────────────────────────────────
+@app.route("/api/commodity/refresh", methods=["POST", "OPTIONS"])
+def api_commodity_refresh():
+    if request.method == "OPTIONS":
+        return "", 204
+    if not HAS_COMMODITY:
+        return jsonify({"ok": False, "error": "commodity_fetcher 模块未找到"}), 500
+    if _analysis_loading.is_set():
+        return jsonify({"ok": False, "message": "正在刷新中，请稍候"}), 429
+    commodity_fetcher._last_fetch = 0   # 清除缓存，强制重新拉取
+    threading.Thread(target=_refresh_commodity_analysis, daemon=True).start()
+    return jsonify({"ok": True, "message": "已触发刷新"})
+
+
+# ── API: 板块联动分析 ────────────────────────────────────────
+@app.route("/api/stock/<code>/sector")
+def api_sector(code):
+    if not HAS_EXTRA:
+        return jsonify({"ok": False, "error": "sector_fetcher 模块未找到"}), 500
+    try:
+        data = get_sector_info(code)
+        return jsonify({"ok": True, "sector": data})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ── API: 北向资金 ────────────────────────────────────────────
+@app.route("/api/market/northbound")
+def api_northbound():
+    if not HAS_EXTRA:
+        return jsonify({"ok": False, "error": "capital_fetcher 模块未找到"}), 500
+    try:
+        data = get_northbound()
+        return jsonify({"ok": True, "northbound": data})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ── API: 个股融资融券 ─────────────────────────────────────────
+@app.route("/api/stock/<code>/margin")
+def api_margin(code):
+    if not HAS_EXTRA:
+        return jsonify({"ok": False, "error": "capital_fetcher 模块未找到"}), 500
+    try:
+        data = get_margin(code)
+        return jsonify({"ok": True, "margin": data})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ── API: 财报日历 ────────────────────────────────────────────
+@app.route("/api/calendar")
+def api_calendar():
+    if not HAS_EXTRA:
+        return jsonify({"ok": False, "error": "calendar_fetcher 模块未找到"}), 500
+    try:
+        with _lock:
+            codes = list(_stocks.keys())
+        events = get_upcoming_events(codes)
+        return jsonify({"ok": True, "events": events})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ══════════════════════════════════════════════════════════════
+#  新功能 API
+# ══════════════════════════════════════════════════════════════
+
+# ── 价格预警 ─────────────────────────────────────────────────
+@app.route("/api/alerts", methods=["GET"])
+def api_alerts_get():
+    with _alerts_lock:
+        return jsonify({"ok": True, "alerts": list(_alerts)})
+
+@app.route("/api/alerts", methods=["POST", "OPTIONS"])
+def api_alerts_add():
+    if request.method == "OPTIONS":
+        return "", 204
+    data = request.get_json(force=True) or {}
+    code      = str(data.get("code", "")).strip()
+    name      = str(data.get("name", code))
+    direction = str(data.get("direction", "above"))   # above / below
+    threshold = float(data.get("threshold", 0))
+    price_type = str(data.get("type", "stock"))       # stock / commodity
+    if not code or not threshold:
+        return jsonify({"ok": False, "error": "缺少 code 或 threshold"}), 400
+    alert = {
+        "id":        f"{code}_{direction}_{threshold}_{int(time.time())}",
+        "type":      price_type,
+        "code":      code,
+        "name":      name,
+        "direction": direction,
+        "threshold": threshold,
+        "triggered": False,
+        "triggered_at": None,
+        "created_at": datetime.datetime.now().isoformat(),
+    }
+    with _alerts_lock:
+        _alerts.append(alert)
+    _save_alerts()
+    return jsonify({"ok": True, "alert": alert})
+
+@app.route("/api/alerts/<alert_id>", methods=["DELETE", "OPTIONS"])
+def api_alerts_delete(alert_id):
+    if request.method == "OPTIONS":
+        return "", 204
+    with _alerts_lock:
+        before = len(_alerts)
+        _alerts[:] = [a for a in _alerts if a.get("id") != alert_id]
+        deleted = len(_alerts) < before
+    _save_alerts()
+    return jsonify({"ok": deleted})
+
+@app.route("/api/alerts/triggered")
+def api_alerts_triggered():
+    """返回已触发的预警并清空队列"""
+    items = list(_triggered_queue)
+    _triggered_queue.clear()
+    return jsonify({"ok": True, "triggered": items})
+
+@app.route("/api/alerts/reset/<alert_id>", methods=["POST", "OPTIONS"])
+def api_alerts_reset(alert_id):
+    """重置预警（让它可以再次触发）"""
+    if request.method == "OPTIONS":
+        return "", 204
+    with _alerts_lock:
+        for a in _alerts:
+            if a.get("id") == alert_id:
+                a["triggered"] = False
+                a["triggered_at"] = None
+    _save_alerts()
+    return jsonify({"ok": True})
+
+
+# ── 每日市场总结（按钮触发）────────────────────────────────
+@app.route("/api/market/summary", methods=["POST", "OPTIONS"])
+def api_market_summary():
+    if request.method == "OPTIONS":
+        return "", 204
+    if not HAS_MODULES:
+        return jsonify({"ok": False, "error": "Demo 模式不支持 AI 总结"}), 400
+    try:
+        cfg = Config()
+        if not cfg.enable_ai or not cfg.ai_api_key:
+            return jsonify({"ok": False, "error": "未配置 AI Key，请在 .env 中设置 DEEPSEEK_API_KEY"}), 400
+
+        from ai_advisor import AIAdvisor
+        from openai import OpenAI
+
+        # 收集股票数据
+        with _lock:
+            stocks_snap = list(_stocks.values())
+
+        # 收集大宗商品数据
+        with _analysis_lock:
+            comm_snap = _commodity_analysis.get("commodities", [])
+
+        # 构建综合 Prompt
+        today = datetime.datetime.now().strftime("%Y年%m月%d日")
+        stock_lines = []
+        for s in stocks_snap:
+            if s.get("loading") or not s.get("price"):
+                continue
+            stock_lines.append(
+                f"  {s.get('name',s['code'])}({s['code']}): "
+                f"价格{s.get('price',0)} 涨跌{s.get('change',0):+.2f} "
+                f"决策:{s.get('decision','观望')}"
+            )
+        comm_lines = []
+        for c in comm_snap:
+            pct = c.get("change_pct", 0)
+            comm_lines.append(
+                f"  {c['name']}({c['code']}): {c['price']} {c.get('unit','')}  {pct:+.2f}%"
+            )
+
+        prompt = f"""请为以下{today}的市场数据生成一份简洁的每日市场总结报告。
+
+【监控股票】
+{chr(10).join(stock_lines) if stock_lines else "  暂无数据"}
+
+【全球大宗商品 & 外汇】
+{chr(10).join(comm_lines) if comm_lines else "  暂无数据"}
+
+要求：
+1. 整体市场情绪判断（乐观/中性/谨慎/悲观）
+2. 今日最值得关注的 2-3 个信号（股票或大宗商品）
+3. 大宗商品价格变动对A股的潜在影响（1-2句）
+4. 明日操作建议（1-2句）
+5. 字数控制在 200 字以内，语言简洁专业
+
+直接输出中文正文，不需要 JSON，不需要标题。"""
+
+        client = OpenAI(api_key=cfg.ai_api_key, base_url=cfg.ai_base_url, timeout=60)
+        kwargs = dict(
+            model=cfg.ai_model,
+            messages=[
+                {"role": "system", "content": "你是资深A股策略分析师，擅长简洁、准确地总结市场每日动态。"},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=600,
+        )
+        if cfg.enable_thinking:
+            kwargs["reasoning_effort"] = cfg.thinking_effort
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+        else:
+            kwargs["temperature"] = cfg.ai_temperature
+
+        resp = client.chat.completions.create(**kwargs)
+        summary = resp.choices[0].message.content.strip()
+
+        return jsonify({
+            "ok": True,
+            "summary": summary,
+            "generated_at": datetime.datetime.now().isoformat(),
+            "date": today,
+        })
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ── 数据导出 Excel（按钮触发）────────────────────────────────
+@app.route("/api/export")
+def api_export():
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, numbers
+        from io import BytesIO
+        from flask import send_file
+
+        wb = openpyxl.Workbook()
+
+        # ── Sheet 1: 股票 ────────────────────────────────────
+        ws1 = wb.active
+        ws1.title = "股票监控"
+        headers1 = ["代码","名称","价格","涨跌额","决策","AI建议",
+                    "RSI","量比","MA5","MA20","DIF","DEA","更新时间"]
+        ws1.append(headers1)
+        with _lock:
+            stocks_data = list(_stocks.values())
+        for s in stocks_data:
+            if s.get("loading"):
+                continue
+            ws1.append([
+                s.get("code",""), s.get("name",""),
+                s.get("price",0), s.get("change",0),
+                s.get("decision",""), s.get("aiDecision",""),
+                s.get("rsi",0), s.get("vr",0),
+                s.get("ma5",0), s.get("ma20",0),
+                s.get("dif",0), s.get("dea",0),
+                (s.get("updatedAt","") or "")[:19],
+            ])
+
+        # ── Sheet 2: 大宗商品 & 外汇 ──────────────────────
+        ws2 = wb.create_sheet("大宗商品&外汇")
+        headers2 = ["代码","名称","分类","价格","单位","涨跌额","涨跌幅%","数据来源","更新时间"]
+        ws2.append(headers2)
+        with _analysis_lock:
+            comm_data = _commodity_analysis.get("commodities", [])
+        for c in comm_data:
+            ws2.append([
+                c.get("code",""), c.get("name",""), c.get("category",""),
+                c.get("price",0), c.get("unit",""),
+                c.get("change",0), c.get("change_pct",0),
+                c.get("source",""), (c.get("updated_at","") or "")[:19],
+            ])
+
+        # ── 样式：加粗表头 ────────────────────────────────
+        for ws in [ws1, ws2]:
+            for cell in ws[1]:
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill("solid", fgColor="1E2228")
+            for col in ws.columns:
+                ws.column_dimensions[col[0].column_letter].width = 14
+
+        # ── 输出为字节流 ──────────────────────────────────
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        filename = f"StockMonitor_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+        return send_file(buf, as_attachment=True,
+                         download_name=filename,
+                         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    except ImportError:
+        return jsonify({"ok": False, "error": "openpyxl 未安装，请运行 pip install openpyxl"}), 500
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 # ══════════════════════════════════════════════════════════════
@@ -452,19 +1022,32 @@ def _auto_refresh_loop():
         return
     try:
         cfg = Config()
-        interval = cfg.interval_minutes * 60
+        stock_interval = cfg.interval_minutes * 60
     except Exception:
-        interval = 3600
+        stock_interval = 3600
+
+    commodity_interval = 300   # 大宗商品 5 分钟刷新一次
+    stock_ts = commodity_ts = time.time()
 
     while True:
-        time.sleep(interval)
-        print(f"[定时] 开始自动刷新所有股票 ({len(_stocks)} 只)...")
-        with _lock:
-            codes = list(_stocks.keys())
-        for code in codes:
-            t = threading.Thread(target=_fetch_stock, args=(code,), daemon=True)
-            t.start()
-            time.sleep(2)  # 错开请求，避免并发过高
+        time.sleep(60)
+        now = time.time()
+
+        # 大宗商品定时刷新
+        if HAS_COMMODITY and (now - commodity_ts) >= commodity_interval:
+            commodity_ts = now
+            threading.Thread(target=_refresh_commodity_analysis, daemon=True).start()
+
+        # 股票定时刷新
+        if now - stock_ts >= stock_interval:
+            stock_ts = now
+            print(f"[定时] 开始自动刷新所有股票 ({len(_stocks)} 只)...")
+            with _lock:
+                codes = list(_stocks.keys())
+            for code in codes:
+                t = threading.Thread(target=_fetch_stock, args=(code,), daemon=True)
+                t.start()
+                time.sleep(2)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -481,6 +1064,18 @@ if __name__ == "__main__":
     print("=" * 55)
 
     _init_stocks()
+
+    # 启动时加载缓存和预警
+    _load_alerts()
+    cached = _load_analysis_cache()
+    if cached and HAS_COMMODITY:
+        with _analysis_lock:
+            _commodity_analysis.update(cached)
+        print("[缓存] 已从缓存恢复上次 AI 分析结果")
+
+    # 启动时异步加载大宗商品（即使有缓存也后台刷新）
+    if HAS_COMMODITY:
+        threading.Thread(target=_refresh_commodity_analysis, daemon=True).start()
 
     # 后台自动刷新线程
     t = threading.Thread(target=_auto_refresh_loop, daemon=True)
