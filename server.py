@@ -263,13 +263,20 @@ def _init_stocks():
             cfg = Config()
             codes = _load_watchlist(cfg.stock_codes)
             _stocks = {code: {"code": code, "name": code, "loading": True} for code in codes}
-            # 并发拉取，最多 5 个同时进行
-            def _fetch_with_delay(args):
-                idx, code = args
-                time.sleep(idx * 0.5)   # 错开 0.5s，避免瞬间并发过高
+
+            # 后台并发拉取，不阻塞 Flask 启动
+            # 用 daemon 线程 + 错开启动时间，避免瞬间并发过高
+            def _fetch_with_delay(idx: int, code: str):
+                time.sleep(idx * 0.5)
                 _fetch_stock(code)
-            with ThreadPoolExecutor(max_workers=5) as ex:
-                ex.map(_fetch_with_delay, enumerate(codes))
+
+            for i, code in enumerate(codes):
+                t = threading.Thread(
+                    target=_fetch_with_delay,
+                    args=(i, code),
+                    daemon=True,
+                )
+                t.start()
             return
         except Exception as e:
             print(f"[警告] 读取 Config 失败，使用 Demo 数据: {e}")
