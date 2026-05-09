@@ -59,6 +59,15 @@ except ImportError as e:
     print(f"[警告] 扩展模块未找到: {e}")
     HAS_EXTRA = False
 
+# ── 日志初始化（必须在其他 logger 调用前执行）────────────────────
+# 没有这个调用的话，loguru 会用默认 handler（DEBUG 级别全开）刷屏控制台
+try:
+    from logger_setup import setup_logger
+    _APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+    setup_logger(str(_APP_DIR))
+except Exception as _log_err:
+    print(f"[警告] 日志模块初始化失败: {_log_err}")
+
 # 大宗商品全局状态
 _commodity_analysis: dict = {}
 _analysis_lock = threading.Lock()
@@ -163,11 +172,14 @@ def _check_alerts(code: str, name: str, price: float):
             if hit:
                 alert["triggered"] = True
                 alert["triggered_at"] = datetime.datetime.now().isoformat()
-                _triggered_queue.append({
+                payload = {
                     "code": code, "name": name, "price": price,
                     "direction": direction, "threshold": thr,
                     "triggered_at": alert["triggered_at"],
-                })
+                }
+                _triggered_queue.append(payload)
+                # WebSocket 即时推送（替代 30 秒轮询，延迟 ~30s → ~瞬时）
+                _ws_emit("alert_triggered", payload)
                 print(f"[预警] ★ {name}({code}) 价格 {price} {direction} {thr}")
     _save_alerts()
 
@@ -444,6 +456,9 @@ def _fetch_stock(code: str) -> dict:
         # 检查价格预警
         _check_alerts(code, info.get("name", code), price)
 
+        # WebSocket 实时推送：通知所有客户端这只股票已更新
+        _ws_emit("stock_updated", stock_data)
+
         print(f"[{code}] ✓ 数据更新完成  价格={price}  决策={result.final_decision}")
         return stock_data
 
@@ -464,6 +479,35 @@ def _fetch_stock(code: str) -> dict:
 # ══════════════════════════════════════════════════════════════
 
 app = Flask(__name__, static_folder=".")
+
+# ── WebSocket 实时推送（可选，未装 flask-socketio 时降级为纯 HTTP）────
+# 推送事件：
+#   stocks_snapshot       客户端连接时全量推
+#   stock_updated         单只股票数据更新
+#   commodities_snapshot  客户端连接时全量推 + 大宗商品刷新完成时
+#   alert_triggered       价格预警命中时
+try:
+    from flask_socketio import SocketIO
+    socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading",
+                        logger=False, engineio_logger=False)
+    HAS_WS = True
+    print("[WS] flask-socketio 已加载")
+except ImportError:
+    socketio = None
+    HAS_WS = False
+    print("[WS] flask-socketio 未安装，将仅用 HTTP 模式")
+
+
+def _ws_emit(event: str, payload):
+    """安全推送：socketio 未启用时静默 no-op"""
+    if not HAS_WS or socketio is None:
+        return
+    try:
+        socketio.emit(event, payload)
+    except Exception as e:
+        # 推送失败不应影响主流程
+        from loguru import logger
+        logger.debug(f"[WS] emit {event} failed: {e}")
 
 
 @app.after_request
@@ -616,8 +660,43 @@ def api_status():
         "commodity_loading": _analysis_loading.is_set(),
         "stocks": len(_stocks),
         "loading": list(_loading),
+        "ws": HAS_WS,
         "time": datetime.datetime.now().isoformat(),
     })
+
+
+# ══════════════════════════════════════════════════════════════
+#  WebSocket 事件 handler
+# ══════════════════════════════════════════════════════════════
+if HAS_WS and socketio is not None:
+
+    @socketio.on("connect")
+    def _ws_on_connect():
+        """客户端连接时，立即推送全量快照（股票 + 大宗商品）"""
+        from flask import request
+        sid = getattr(request, "sid", "?")
+        print(f"[WS] 客户端连接 sid={sid}")
+        try:
+            with _lock:
+                stocks_payload = list(_stocks.values())
+            socketio.emit("stocks_snapshot", stocks_payload, to=sid)
+
+            with _analysis_lock:
+                comm_data = dict(_commodity_analysis)
+            commodities = comm_data.pop("commodities", [])
+            if commodities:
+                socketio.emit("commodities_snapshot", {
+                    "commodities": commodities,
+                    "analysis":    comm_data,
+                }, to=sid)
+        except Exception as e:
+            print(f"[WS] connect 推送失败: {e}")
+
+    @socketio.on("disconnect")
+    def _ws_on_disconnect():
+        from flask import request
+        sid = getattr(request, "sid", "?")
+        print(f"[WS] 客户端断开 sid={sid}")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -682,6 +761,12 @@ def _refresh_commodity_analysis():
         # 检查大宗商品价格预警
         for c in commodities:
             _check_alerts(c["code"], c["name"], float(c["price"]))
+
+        # WebSocket 实时推送：把整批大宗商品数据 + AI 分析结果一起推
+        _ws_emit("commodities_snapshot", {
+            "commodities": commodities,
+            "analysis":    {k: v for k, v in _commodity_analysis.items() if k != "commodities"},
+        })
 
         print(f"[大宗] ✓ {len(commodities)} 个品种，来源分布: "
               f"{set(c['source'] for c in commodities)}")
@@ -1088,4 +1173,11 @@ if __name__ == "__main__":
     t = threading.Thread(target=_auto_refresh_loop, daemon=True)
     t.start()
 
-    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+    # 启动 web 服务：有 ws 时用 socketio.run，否则用普通 app.run
+    if HAS_WS and socketio is not None:
+        print("[启动] 使用 SocketIO 模式（HTTP + WebSocket）")
+        socketio.run(app, host="0.0.0.0", port=5000, debug=False,
+                     allow_unsafe_werkzeug=True)
+    else:
+        print("[启动] 使用纯 HTTP 模式")
+        app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)

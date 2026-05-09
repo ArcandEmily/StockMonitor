@@ -7,6 +7,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600&family=Noto+Sans+SC:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.4.3/echarts.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
 <style>
 :root {
   --bg:          #111115;
@@ -1123,24 +1124,20 @@ function renderCommGrid() {
     : '<div style="color:var(--t3);font-size:12px;padding:20px">该分类暂无数据</div>';
 }
 
-// ── 连接状态心跳 ─────────────────────────────────────────────
+// ── 连接状态心跳（WS 未连接时使用 HTTP 心跳兜底）─────────────
 let _lastHb = Date.now();
 async function heartbeat() {
+  // WS 已连，状态由 socket connect/disconnect 事件直接驱动，HTTP 心跳跳过
+  if (_wsConnected) { _lastHb = Date.now(); return; }
   try {
     const r = await fetch('/api/status', {signal: AbortSignal.timeout(5000)});
     if (r.ok) {
       _lastHb = Date.now();
-      const dot = document.getElementById('connDot');
-      const lbl = document.getElementById('connLabel');
-      if (dot) dot.className = 'conn-dot ok';
-      if (lbl) lbl.textContent = '已连接';
+      _setConnDot('ok');
     }
   } catch {
     const elapsed = (Date.now() - _lastHb) / 1000;
-    const dot = document.getElementById('connDot');
-    const lbl = document.getElementById('connLabel');
-    if (dot) dot.className = elapsed > 30 ? 'conn-dot dead' : 'conn-dot slow';
-    if (lbl) lbl.textContent = elapsed > 30 ? '已断开' : '响应慢';
+    _setConnDot(elapsed > 30 ? 'dead' : 'slow');
   }
 }
 setInterval(heartbeat, 15000);
@@ -1203,6 +1200,8 @@ async function resetAlert(id) {
   loadAlerts();
 }
 async function pollTriggered() {
+  // WebSocket 已连接时不需要轮询 — 服务端会实时推 alert_triggered 事件
+  if (_wsConnected) return;
   try {
     const d = await fetch('/api/alerts/triggered').then(r=>r.json());
     if (d.triggered && d.triggered.length) {
@@ -1217,7 +1216,7 @@ async function pollTriggered() {
     }
   } catch {}
 }
-setInterval(pollTriggered, 30000);
+setInterval(pollTriggered, 90000);   // WS 兜底：90 秒一次（之前 30s）
 if ('Notification' in window && Notification.permission === 'default')
   Notification.requestPermission();
 
@@ -1782,6 +1781,129 @@ async function pollLoop() {
 }
 
 // ════════════════════════════════════════════════════════════
+//  WebSocket 实时推送（主，HTTP 轮询作为 fallback）
+// ════════════════════════════════════════════════════════════
+//  事件：
+//    stocks_snapshot       服务端推全量 → 整批更新 STOCKS
+//    stock_updated         单只股票更新 → 替换 STOCKS 中对应项
+//    commodities_snapshot  大宗商品全量 → 替换 COMMODITIES
+//    alert_triggered       预警命中 → 立即 Toast + Notification
+//
+//  WS 没装/未连时，下方现有的 setInterval 兜底，UI 不会停摆。
+let _ws = null;
+let _wsConnected = false;
+
+function _setConnDot(state) {
+  const dot = document.getElementById('connDot');
+  const lbl = document.getElementById('connLabel');
+  const map = {
+    ok:    {cls: 'conn-dot ok',   txt: '已连接'},
+    slow:  {cls: 'conn-dot slow', txt: '响应慢'},
+    dead:  {cls: 'conn-dot dead', txt: '已断开'},
+    ws:    {cls: 'conn-dot ok',   txt: '实时推送'},
+  };
+  const m = map[state] || map.ok;
+  if (dot) dot.className = m.cls;
+  if (lbl) lbl.textContent = m.txt;
+}
+
+function initWebSocket() {
+  if (typeof io === 'undefined') {
+    console.warn('[WS] socket.io 未加载，仅使用 HTTP 轮询');
+    return;
+  }
+  // 自动重连：1s 起步，指数退避，最长 10s
+  _ws = io({
+    reconnection: true,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 10000,
+    timeout: 8000,
+  });
+
+  _ws.on('connect', () => {
+    _wsConnected = true;
+    _setConnDot('ws');
+    console.log('[WS] 已连接 sid=', _ws.id);
+  });
+
+  _ws.on('disconnect', (reason) => {
+    _wsConnected = false;
+    _setConnDot('slow');
+    console.log('[WS] 已断开:', reason, '— 启用 HTTP 轮询兜底');
+  });
+
+  _ws.on('connect_error', (err) => {
+    _wsConnected = false;
+    console.warn('[WS] 连接错误:', err.message);
+  });
+
+  // ── 全量股票快照（连接建立时）
+  _ws.on('stocks_snapshot', (list) => {
+    if (!Array.isArray(list) || !list.length) return;
+    STOCKS = list;
+    renderSidebar();
+    if (STOCKS[sel]) {
+      // 别 fetch 了，直接拿快照里的当前选中项
+      const cur = STOCKS[sel];
+      // 但因为快照可能不含 candles 等重型字段（视情况），稳妥起见拉一次详情
+      if (!cur.candles) go(sel);
+    }
+  });
+
+  // ── 单只股票更新
+  _ws.on('stock_updated', (data) => {
+    if (!data || !data.code) return;
+    const idx = STOCKS.findIndex(s => s.code === data.code);
+    if (idx >= 0) {
+      // 用推来的精简字段更新侧边栏（不存 candles 等大字段，避免内存膨胀）
+      STOCKS[idx] = {
+        ...STOCKS[idx],
+        code: data.code, name: data.name,
+        price: data.price, change: data.change,
+        decision: data.decision, rule: data.rule,
+        priceD: data.priceD || STOCKS[idx].priceD,
+        loading: false, error: null,
+        updatedAt: data.updatedAt,
+      };
+    }
+    renderSidebar();
+    // 当前选中的就是它 → 重渲染详情卡（go 会重新 fetch 一次，复用所有渲染函数）
+    if (sel >= 0 && STOCKS[sel] && STOCKS[sel].code === data.code) {
+      go(sel);
+    }
+  });
+
+  // ── 大宗商品全量
+  _ws.on('commodities_snapshot', (payload) => {
+    if (!payload || !Array.isArray(payload.commodities)) return;
+    COMMODITIES = payload.commodities;
+    renderCatFilter();
+    renderCommGrid();
+    updateTicker();
+    if (payload.analysis) {
+      // analysis 字段被 commodity 页其他逻辑用，这里仅缓存
+      window.__commAnalysis = payload.analysis;
+    }
+  });
+
+  // ── 预警触发：实时（替代 30s 轮询）
+  _ws.on('alert_triggered', (t) => {
+    if (!t || !t.code) return;
+    showToast(`🔔 ${t.name}(${t.code}) ${t.direction==='above'?'高于':'低于'} ${t.threshold}，当前 ${t.price}`, 'warn');
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification('StockMonitor 预警', {
+        body: `${t.name} 价格 ${t.price} 已${t.direction==='above'?'高于':'低于'}目标 ${t.threshold}`
+      });
+    }
+    loadAlerts();   // 刷新预警面板里的状态
+  });
+}
+
+// ── 全量股票快照处理（连接时一次性拿到所有股票，省一次 /api/stocks 调用）
+//   注意：snapshot 推送的是完整数据（含 candles），但侧边栏只用精简字段，
+//   所以这里只取需要的字段更新 STOCKS。当前选中股票的详情卡仍由 go() 拉取。
+
+// ════════════════════════════════════════════════════════════
 //  初始化
 // ════════════════════════════════════════════════════════════
 (async function init() {
@@ -1789,8 +1911,11 @@ async function pollLoop() {
   try {
     const st = await fetch('/api/status').then(x=>x.json());
     document.getElementById('modeLabel').textContent =
-      st.mode==='real' ? '真实数据 · 轮询中' : 'Demo 演示模式';
+      st.mode==='real' ? (st.ws ? '真实数据 · 实时推送' : '真实数据 · 轮询模式') : 'Demo 演示模式';
   } catch(e) {}
+
+  // 启动 WebSocket（如果服务端支持）。WS 失败时下方 setInterval 会兜底，UI 不停摆。
+  initWebSocket();
 
   await pollLoop();
   setInterval(tick, 1000);
