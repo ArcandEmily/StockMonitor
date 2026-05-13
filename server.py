@@ -309,11 +309,19 @@ def _fetch_stock(code: str) -> dict:
     """拉取单只股票数据，写入 _stocks，返回数据 dict"""
     _loading.add(code)
     try:
+        # 先拉股票基本信息（轻量，且失败时会返回 fallback {name: code}）
+        # 拿到名字后立即更新 _stocks，让侧边栏先显示真实名字而不是裸代码
+        info = fetch_stock_info(code)
+        with _lock:
+            existing = _stocks.get(code, {})
+            existing.update({"code": code, "name": info.get("name", code), "loading": True})
+            _stocks[code] = existing
+
+        # 再拉 K 线（重型操作，可能失败）
         df = fetch_kline(code, days=60)
         if df is None or len(df) < 20:
             raise ValueError("数据不足")
 
-        info = fetch_stock_info(code)
         df = calc_indicators(df)
         sups, ress = find_support_resistance(df, keep=3)
         last = df.iloc[-1]
@@ -1154,6 +1162,15 @@ if __name__ == "__main__":
     print("  地址：http://localhost:5000")
     print("  按 Ctrl+C 停止")
     print("=" * 55)
+
+    # 启动前先探测数据源健康状况（约 10 秒）。这样后续每只股票直接走
+    # 可用源，不必再"先试东财再 fallback"，省时间也减少骚扰对端
+    if HAS_MODULES:
+        try:
+            from fetcher import probe_data_sources
+            probe_data_sources()
+        except Exception as e:
+            print(f"[源探测] 跳过（{e}）")
 
     _init_stocks()
 

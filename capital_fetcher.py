@@ -93,18 +93,33 @@ def _fetch_northbound() -> dict:
             logger.warning(f"[北向] 找不到净买额列，实际列名: {list(df.columns)}")
             return empty
 
+        # 安全转 float：NaN/None/非数值都视为 None（NaN 是 truthy，不能用 `x or 0`！）
+        def _safe_num(x):
+            try:
+                v = float(x)
+                if v != v:  # NaN 检测（NaN != NaN 是 Python 唯一标识 NaN 的方式）
+                    return None
+                return v
+            except (TypeError, ValueError):
+                return None
+
         for _, row in df.iterrows():
-            raw_net = float(row.get(net_col, 0) or 0)
-            # akshare 北向资金返回单位已经是亿元，无需 /1e8
+            raw_net = _safe_num(row.get(net_col))
+            if raw_net is None:
+                # 跳过这一天的数据（akshare 经常在最新交易日盘中返回 NaN，等收盘才有值）
+                continue
             history.append({
                 "date":        str(row.get("日期", row.get("date", ""))),
                 "net":         round(raw_net, 2),
-                "cumulative":  round(float(row.get(cum_col, 0) or 0), 2) if cum_col else 0,
+                "cumulative":  round(_safe_num(row.get(cum_col)) or 0, 2) if cum_col else 0,
             })
 
         today_net = history[-1]["net"]   if history else None
-        net5      = sum(h["net"] for h in history[-5:]) if len(history) >= 5 else None
+        net5      = round(sum(h["net"] for h in history[-5:]), 2) if len(history) >= 5 else None
 
+        if today_net is None:
+            logger.info("[北向] 暂无有效数据（可能盘中数据未发布）")
+            return empty
         logger.info(f"[北向] 今日净流入={today_net}亿  近5日={net5}亿")
         return {
             "today_net":  today_net,

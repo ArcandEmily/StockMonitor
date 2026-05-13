@@ -735,6 +735,25 @@ async function loadStocks() {
   } catch(e) { console.error('loadStocks:', e); }
 }
 
+// 渲染股票详情卡（fetch 后或 WS 推送后都用这个）
+//   stock: 完整的股票数据（含 candles/kdj/...）
+//   loadAux: 是否同时拉板块/资金/日历这些辅助信息（切换股票时为 true，WS 增量更新为 false）
+function _renderStockDetail(i, stock, loadAux) {
+  STOCKS[i] = { ...STOCKS[i], ...stock };
+  const s = STOCKS[i];
+  renderHeader(s);
+  renderInd(s);
+  renderSR(s);
+  renderAI(s);
+  renderCharts(s);
+  if (s.candles) renderCandleChart(s.candles, s.kdjK, s.kdjD, s.kdjJ, s.kdjLbls);
+  if (loadAux) {
+    loadSectorInfo(s.code);
+    loadCapitalInfo(s.code);
+    loadCalendar();
+  }
+}
+
 async function go(i) {
   sel = i;
   renderSidebar();
@@ -744,22 +763,9 @@ async function go(i) {
     const r  = await fetch(`/api/stock/${code}`);
     const d  = await r.json();
     if(d.ok) {
-      STOCKS[i] = { ...STOCKS[i], ...d.stock };
-      const s = STOCKS[i];
-      renderHeader(s);
-      renderInd(s);
-      renderSR(s);
-      renderAI(s);
-      renderCharts(s);
-      // 蜡烛图
-      if (s.candles) renderCandleChart(s.candles, s.kdjK, s.kdjD, s.kdjJ, s.kdjLbls);
-      // 板块 + 资金（异步，不阻塞主渲染）
-      loadSectorInfo(code);
-      loadCapitalInfo(code);
+      _renderStockDetail(i, d.stock, true);   // 切换股票：拉所有辅助数据
     }
   } catch(e) { console.error('go:', e); }
-  // 财报日历（所有股票共用，每次进入股票视图刷新一次）
-  loadCalendar();
 }
 
 async function addStock() {
@@ -1838,16 +1844,18 @@ function initWebSocket() {
   });
 
   // ── 全量股票快照（连接建立时）
+  //   仅更新 STOCKS 数组（用于侧边栏），不触发 go(sel) —
+  //   loadStocks() 已经处理了首次 go(sel)，stock_updated 处理后续更新
   _ws.on('stocks_snapshot', (list) => {
     if (!Array.isArray(list) || !list.length) return;
-    STOCKS = list;
+    // 用推来的精简字段更新 STOCKS（不存 candles 等大字段）
+    STOCKS = list.map(s => ({
+      code: s.code, name: s.name, price: s.price, change: s.change,
+      decision: s.decision, rule: s.rule, priceD: s.priceD,
+      loading: s.loading || false, error: s.error || null,
+      updatedAt: s.updatedAt,
+    }));
     renderSidebar();
-    if (STOCKS[sel]) {
-      // 别 fetch 了，直接拿快照里的当前选中项
-      const cur = STOCKS[sel];
-      // 但因为快照可能不含 candles 等重型字段（视情况），稳妥起见拉一次详情
-      if (!cur.candles) go(sel);
-    }
   });
 
   // ── 单只股票更新
@@ -1867,9 +1875,15 @@ function initWebSocket() {
       };
     }
     renderSidebar();
-    // 当前选中的就是它 → 重渲染详情卡（go 会重新 fetch 一次，复用所有渲染函数）
+    // 当前选中的就是它 → 直接渲染（推来的数据已含 candles/kdj 全字段，无需 fetch）
+    // loadAux=false：板块/资金/日历是低频数据，stock_updated 时不重复拉
     if (sel >= 0 && STOCKS[sel] && STOCKS[sel].code === data.code) {
-      go(sel);
+      if (data.candles) {
+        _renderStockDetail(sel, data, false);
+      } else {
+        // 数据不完整（理论上不会，兜底）
+        go(sel);
+      }
     }
   });
 

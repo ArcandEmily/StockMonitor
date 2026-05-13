@@ -17,6 +17,9 @@ except ImportError:
 
 CONFIG_FILE = Path("config.yaml")
 
+# 模块级标记：Config 实例化多次时只 INFO 打印一次（避免日志重复）
+_load_logged: bool = False
+
 # ── 内置默认值（config.yaml 缺失或字段空缺时使用）──────────
 _DEFAULT: dict = {
     "ai": {
@@ -99,15 +102,22 @@ class Config:
 
     # ────────────────────────────────────────────────────────
     def _load(self) -> dict:
+        global _load_logged
         if not HAS_YAML:
             return dict(_DEFAULT)
         if not CONFIG_FILE.exists():
-            logger.warning(f"未找到 {CONFIG_FILE}，使用内置默认值（建议复制一份 config.yaml）")
+            if not _load_logged:
+                logger.warning(f"未找到 {CONFIG_FILE}，使用内置默认值（建议复制一份 config.yaml）")
+                _load_logged = True
             return dict(_DEFAULT)
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
-            logger.info(f"已加载配置：{CONFIG_FILE.resolve()}")
+            if not _load_logged:
+                logger.info(f"已加载配置：{CONFIG_FILE.resolve()}")
+                _load_logged = True
+            else:
+                logger.debug(f"重新读取配置：{CONFIG_FILE}")
             return data
         except Exception as e:
             logger.error(f"读取 {CONFIG_FILE} 失败：{e}，使用内置默认值")
