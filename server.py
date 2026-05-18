@@ -27,14 +27,16 @@ from concurrent.futures import ThreadPoolExecutor
 
 from flask import Flask, jsonify, request, send_from_directory
 
-# ── 项目模块 ───────────────────────────────────────────────────
+# ── 项目模块（已合并：15 个 → 7 个）─────────────────────────────
 try:
-    from config import Config
-    from fetcher import fetch_kline, fetch_stock_info
-    from indicators import calc_indicators
-    from analysis import find_support_resistance, describe_sr_relation
-    from ai_advisor import build_prompt, AIAdvisor
-    from decision import make_final_decision, rule_engine
+    from config   import Config, setup_logger
+    from fetcher  import fetch_kline, fetch_stock_info
+    from analysis import (
+        calc_indicators,
+        find_support_resistance, describe_sr_relation,
+        make_final_decision, rule_engine,
+    )
+    from ai       import build_prompt, AIAdvisor
     HAS_MODULES = True
 except ImportError as e:
     print(f"[警告] 部分模块未安装，将使用 Demo 数据: {e}")
@@ -42,8 +44,8 @@ except ImportError as e:
 
 # ── 大宗商品模块 ───────────────────────────────────────────────
 try:
-    from commodity_fetcher import commodity_fetcher
-    from commodity_ai import CommodityAIAdvisor
+    from extras import commodity_fetcher
+    from ai     import CommodityAIAdvisor
     HAS_COMMODITY = True
 except ImportError as e:
     print(f"[警告] 大宗商品模块未找到: {e}")
@@ -51,9 +53,7 @@ except ImportError as e:
 
 # ── 板块/资金/日历模块（可选）──────────────────────────────────
 try:
-    from sector_fetcher   import get_sector_info
-    from capital_fetcher  import get_northbound, get_margin
-    from calendar_fetcher import get_upcoming_events
+    from extras import get_sector_info, get_northbound, get_margin, get_upcoming_events
     HAS_EXTRA = True
 except ImportError as e:
     print(f"[警告] 扩展模块未找到: {e}")
@@ -62,7 +62,6 @@ except ImportError as e:
 # ── 日志初始化（必须在其他 logger 调用前执行）────────────────────
 # 没有这个调用的话，loguru 会用默认 handler（DEBUG 级别全开）刷屏控制台
 try:
-    from logger_setup import setup_logger
     _APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
     setup_logger(str(_APP_DIR))
 except Exception as _log_err:
@@ -178,8 +177,6 @@ def _check_alerts(code: str, name: str, price: float):
                     "triggered_at": alert["triggered_at"],
                 }
                 _triggered_queue.append(payload)
-                # WebSocket 即时推送（替代 30 秒轮询，延迟 ~30s → ~瞬时）
-                _ws_emit("alert_triggered", payload)
                 print(f"[预警] ★ {name}({code}) 价格 {price} {direction} {thr}")
     _save_alerts()
 
@@ -464,9 +461,6 @@ def _fetch_stock(code: str) -> dict:
         # 检查价格预警
         _check_alerts(code, info.get("name", code), price)
 
-        # WebSocket 实时推送：通知所有客户端这只股票已更新
-        _ws_emit("stock_updated", stock_data)
-
         print(f"[{code}] ✓ 数据更新完成  价格={price}  决策={result.final_decision}")
         return stock_data
 
@@ -487,36 +481,6 @@ def _fetch_stock(code: str) -> dict:
 # ══════════════════════════════════════════════════════════════
 
 app = Flask(__name__, static_folder=".")
-
-# ── WebSocket 实时推送（可选，未装 flask-socketio 时降级为纯 HTTP）────
-# 推送事件：
-#   stocks_snapshot       客户端连接时全量推
-#   stock_updated         单只股票数据更新
-#   commodities_snapshot  客户端连接时全量推 + 大宗商品刷新完成时
-#   alert_triggered       价格预警命中时
-try:
-    from flask_socketio import SocketIO
-    socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading",
-                        logger=False, engineio_logger=False)
-    HAS_WS = True
-    print("[WS] flask-socketio 已加载")
-except ImportError:
-    socketio = None
-    HAS_WS = False
-    print("[WS] flask-socketio 未安装，将仅用 HTTP 模式")
-
-
-def _ws_emit(event: str, payload):
-    """安全推送：socketio 未启用时静默 no-op"""
-    if not HAS_WS or socketio is None:
-        return
-    try:
-        socketio.emit(event, payload)
-    except Exception as e:
-        # 推送失败不应影响主流程
-        from loguru import logger
-        logger.debug(f"[WS] emit {event} failed: {e}")
-
 
 @app.after_request
 def cors(r):
@@ -668,43 +632,8 @@ def api_status():
         "commodity_loading": _analysis_loading.is_set(),
         "stocks": len(_stocks),
         "loading": list(_loading),
-        "ws": HAS_WS,
         "time": datetime.datetime.now().isoformat(),
     })
-
-
-# ══════════════════════════════════════════════════════════════
-#  WebSocket 事件 handler
-# ══════════════════════════════════════════════════════════════
-if HAS_WS and socketio is not None:
-
-    @socketio.on("connect")
-    def _ws_on_connect():
-        """客户端连接时，立即推送全量快照（股票 + 大宗商品）"""
-        from flask import request
-        sid = getattr(request, "sid", "?")
-        print(f"[WS] 客户端连接 sid={sid}")
-        try:
-            with _lock:
-                stocks_payload = list(_stocks.values())
-            socketio.emit("stocks_snapshot", stocks_payload, to=sid)
-
-            with _analysis_lock:
-                comm_data = dict(_commodity_analysis)
-            commodities = comm_data.pop("commodities", [])
-            if commodities:
-                socketio.emit("commodities_snapshot", {
-                    "commodities": commodities,
-                    "analysis":    comm_data,
-                }, to=sid)
-        except Exception as e:
-            print(f"[WS] connect 推送失败: {e}")
-
-    @socketio.on("disconnect")
-    def _ws_on_disconnect():
-        from flask import request
-        sid = getattr(request, "sid", "?")
-        print(f"[WS] 客户端断开 sid={sid}")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -769,12 +698,6 @@ def _refresh_commodity_analysis():
         # 检查大宗商品价格预警
         for c in commodities:
             _check_alerts(c["code"], c["name"], float(c["price"]))
-
-        # WebSocket 实时推送：把整批大宗商品数据 + AI 分析结果一起推
-        _ws_emit("commodities_snapshot", {
-            "commodities": commodities,
-            "analysis":    {k: v for k, v in _commodity_analysis.items() if k != "commodities"},
-        })
 
         print(f"[大宗] ✓ {len(commodities)} 个品种，来源分布: "
               f"{set(c['source'] for c in commodities)}")
@@ -969,7 +892,7 @@ def api_market_summary():
         if not cfg.enable_ai or not cfg.ai_api_key:
             return jsonify({"ok": False, "error": "未配置 AI Key，请在 .env 中设置 DEEPSEEK_API_KEY"}), 400
 
-        from ai_advisor import AIAdvisor
+        from ai import AIAdvisor
         from openai import OpenAI
 
         # 收集股票数据
@@ -1155,23 +1078,31 @@ def _auto_refresh_loop():
 # ══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    print("=" * 55)
-    print("  StockMonitor · Web 仪表盘后端")
-    print("=" * 55)
-    print(f"  模式：{'真实数据 (akshare + AI)' if HAS_MODULES else 'Demo 演示数据'}")
-    print("  地址：http://localhost:5000")
-    print("  按 Ctrl+C 停止")
-    print("=" * 55)
+    print("=" * 55, flush=True)
+    print("  StockMonitor · Web 仪表盘后端", flush=True)
+    print("=" * 55, flush=True)
+    print(f"  模式：{'真实数据 (akshare + AI)' if HAS_MODULES else 'Demo 演示数据'}", flush=True)
+    print("  地址：http://localhost:5000", flush=True)
+    print("  按 Ctrl+C 停止", flush=True)
+    print("=" * 55, flush=True)
 
-    # 启动前先探测数据源健康状况（约 10 秒）。这样后续每只股票直接走
-    # 可用源，不必再"先试东财再 fallback"，省时间也减少骚扰对端
+    # 启动前探测三个数据源，把坏的标记掉。后续股票直接走可用源，不再骚扰坏源。
+    print(f"\n[启动] HAS_MODULES = {HAS_MODULES}", flush=True)
     if HAS_MODULES:
         try:
+            print("[启动] 正在 import probe_data_sources...", flush=True)
             from fetcher import probe_data_sources
+            print("[启动] 调用 probe_data_sources()...", flush=True)
             probe_data_sources()
+            print("[启动] probe 调用完成", flush=True)
         except Exception as e:
-            print(f"[源探测] 跳过（{e}）")
+            print(f"[探测] 跳过: {type(e).__name__}: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+    else:
+        print("[启动] HAS_MODULES=False，跳过数据源探测", flush=True)
 
+    print("\n[启动] 初始化股票列表...", flush=True)
     _init_stocks()
 
     # 启动时加载缓存和预警
@@ -1190,11 +1121,4 @@ if __name__ == "__main__":
     t = threading.Thread(target=_auto_refresh_loop, daemon=True)
     t.start()
 
-    # 启动 web 服务：有 ws 时用 socketio.run，否则用普通 app.run
-    if HAS_WS and socketio is not None:
-        print("[启动] 使用 SocketIO 模式（HTTP + WebSocket）")
-        socketio.run(app, host="0.0.0.0", port=5000, debug=False,
-                     allow_unsafe_werkzeug=True)
-    else:
-        print("[启动] 使用纯 HTTP 模式")
-        app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)

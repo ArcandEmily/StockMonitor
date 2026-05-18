@@ -1,10 +1,14 @@
 """
 config.py
 ─────────
-从 config.yaml 读取所有配置。
-配置文件路径：程序同目录下的 config.yaml
-"""
+配置加载（config.yaml）+ 日志初始化。
 
+合并自旧版：
+  - config.py        → 配置类 Config
+  - logger_setup.py  → setup_logger()
+"""
+import os
+import sys
 from pathlib import Path
 from loguru import logger
 
@@ -17,10 +21,9 @@ except ImportError:
 
 CONFIG_FILE = Path("config.yaml")
 
-# 模块级标记：Config 实例化多次时只 INFO 打印一次（避免日志重复）
+# 模块级标记：Config 多次实例化时只 INFO 打印一次
 _load_logged: bool = False
 
-# ── 内置默认值（config.yaml 缺失或字段空缺时使用）──────────
 _DEFAULT: dict = {
     "ai": {
         "api_key":     "",
@@ -48,28 +51,20 @@ _DEFAULT: dict = {
 }
 
 
-def _deep_get(d: dict, *keys, default=None):
-    """安全多级取值：_deep_get(d, 'ai', 'api_key', default='')"""
-    cur = d
-    for k in keys:
-        if not isinstance(cur, dict):
-            return default
-        cur = cur.get(k, default)
-        if cur is None:
-            return default
-    return cur
-
+# ════════════════════════════════════════════════════════════════
+#  Config 类
+# ════════════════════════════════════════════════════════════════
 
 class Config:
     def __init__(self):
         raw = self._load()
 
-        ai      = raw.get("ai", {})
-        stocks  = raw.get("stocks", {})
-        alerts  = raw.get("alerts", {})
+        ai       = raw.get("ai", {})
+        stocks   = raw.get("stocks", {})
+        alerts   = raw.get("alerts", {})
         thinking = ai.get("thinking", {})
 
-        # ── AI ─────────────────────────────────────────────────
+        # ── AI ─────────────────────────────────────────────
         self.ai_api_key     = str(ai.get("api_key",     "") or "").strip()
         self.ai_base_url    = str(ai.get("base_url",    "https://api.deepseek.com")).strip()
         self.ai_model       = str(ai.get("model",       "deepseek-chat")).strip()
@@ -81,12 +76,11 @@ class Config:
         self.enable_thinking = bool(thinking.get("enabled", False))
         self.thinking_effort = str(thinking.get("effort", "high")).strip().lower()
 
-        # ── 股票 ───────────────────────────────────────────────
+        # ── 股票 ───────────────────────────────────────────
         raw_codes = stocks.get("codes", ["000001", "600519"])
         if isinstance(raw_codes, list):
             self.stock_codes = [str(c).strip() for c in raw_codes if str(c).strip()]
         else:
-            # 兼容逗号分隔字符串写法
             self.stock_codes = [c.strip() for c in str(raw_codes).split(",") if c.strip()]
 
         self.kline_days               = int(stocks.get("kline_days",               250))
@@ -97,10 +91,9 @@ class Config:
         self.support_tolerance_pct    = float(stocks.get("support_tolerance_pct",    2.0))
         self.resistance_tolerance_pct = float(stocks.get("resistance_tolerance_pct", 2.0))
 
-        # ── 提醒 ───────────────────────────────────────────────
+        # ── 提醒 ───────────────────────────────────────────
         self.enable_sound = bool(alerts.get("enable_sound", False))
 
-    # ────────────────────────────────────────────────────────
     def _load(self) -> dict:
         global _load_logged
         if not HAS_YAML:
@@ -130,3 +123,40 @@ class Config:
             f"AI：{'开启' if self.enable_ai else '关闭'} | 模型：{self.ai_model}"
             + (f" | 思考模式 [{self.thinking_effort}]" if self.enable_thinking else "")
         )
+
+
+# ════════════════════════════════════════════════════════════════
+#  日志初始化（原 logger_setup.py）
+# ════════════════════════════════════════════════════════════════
+
+def setup_logger(app_path: str):
+    """配置 loguru：控制台 + 按天轮转的日志文件 + 错误单独存档"""
+    log_dir = os.path.join(app_path, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+
+    logger.remove()
+
+    logger.add(
+        sys.stdout,
+        level="INFO",
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | {message}",
+        colorize=True,
+    )
+
+    logger.add(
+        os.path.join(log_dir, "stock_{time:YYYY-MM-DD}.log"),
+        level="DEBUG",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{line} | {message}",
+        rotation="00:00",
+        retention="30 days",
+        encoding="utf-8",
+    )
+
+    logger.add(
+        os.path.join(log_dir, "errors.log"),
+        level="ERROR",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{line} | {message}",
+        rotation="10 MB",
+        retention="60 days",
+        encoding="utf-8",
+    )

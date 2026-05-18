@@ -1,21 +1,29 @@
 """
-调度模块
+scheduler.py — 定时轮询调度
+─────────────────────────────
 - 定时轮询所有股票
 - 异常自动恢复
 - 支持交易时段过滤
+
+v3.1 变化：仅更新 imports 适配合并后的模块结构。
 """
 import time
 import datetime
 import json
 import os
+import traceback
 from loguru import logger
 
-from config import Config
-from fetcher import fetch_kline, fetch_stock_info, CommodityFetcher
-from indicators import calc_indicators
-from analysis import find_support_resistance, describe_sr_relation
-from ai_advisor import build_prompt, AIAdvisor
-from decision import make_final_decision
+from config    import Config
+from fetcher   import fetch_kline, fetch_stock_info
+from analysis  import (
+    calc_indicators,
+    find_support_resistance,
+    describe_sr_relation,
+    make_final_decision,
+)
+from ai        import build_prompt, AIAdvisor
+from extras    import commodity_fetcher
 
 
 class StockScheduler:
@@ -25,7 +33,7 @@ class StockScheduler:
         self.ai_advisor = None
         if cfg.enable_ai:
             if not cfg.ai_api_key:
-                logger.warning("ENABLE_AI=True 但 DEEPSEEK_API_KEY 未设置，AI 功能将禁用")
+                logger.warning("ENABLE_AI=True 但 API Key 未设置，AI 功能将禁用")
             else:
                 self.ai_advisor = AIAdvisor(
                     api_key=cfg.ai_api_key,
@@ -34,15 +42,11 @@ class StockScheduler:
                     temperature=cfg.ai_temperature,
                     max_tokens=cfg.ai_max_tokens,
                     timeout=cfg.ai_timeout,
+                    enable_thinking=cfg.enable_thinking,
+                    thinking_effort=cfg.thinking_effort,
                 )
                 logger.info(f"AI 已就绪，模型：{cfg.ai_model}，接口：{cfg.ai_base_url}")
 
-        self.commodity_fetcher = CommodityFetcher(
-            api_key=cfg.wallstreet_api_key,
-            commodity_codes=cfg.commodity_codes,
-        )
-
-        # 结果历史（内存）
         self._results: list[dict] = []
 
     # ────────────────────────────────────────────────────────────
@@ -58,18 +62,19 @@ class StockScheduler:
             logger.info("当前不在配置的交易时段，跳过本轮")
             return
 
-        # 大宗商品数据（预留）
-        commodity_data = {}
-        if self.cfg.enable_commodity and self.commodity_fetcher.is_configured():
-            commodity_data = self.commodity_fetcher.fetch()
-        commodity_context = self.commodity_fetcher.format_for_prompt(commodity_data)
+        # 大宗商品段落（用于个股 prompt 上下文）
+        try:
+            _ = commodity_fetcher.fetch_all()
+            commodity_context = commodity_fetcher.format_for_prompt()
+        except Exception as e:
+            logger.warning(f"大宗商品数据获取失败: {e}")
+            commodity_context = ""
 
         for symbol in self.cfg.stock_codes:
             try:
                 self._analyze_one(symbol, commodity_context)
             except Exception as e:
                 logger.error(f"[{symbol}] 分析失败（将在下一轮重试）: {e}")
-                import traceback
                 logger.debug(traceback.format_exc())
 
         logger.info(f"─── 本轮分析完成，下次将在 {self.cfg.interval_minutes} 分钟后执行 ───\n")
@@ -164,7 +169,6 @@ class StockScheduler:
     # ────────────────────────────────────────────────────────────
 
     def _in_trading_hours(self, now: datetime.datetime) -> bool:
-        """检查当前是否在配置的交易时段内（留空则全天运行）"""
         if not self.cfg.trading_hours:
             return True
         segments = self.cfg.trading_hours.split(",")
@@ -178,7 +182,7 @@ class StockScheduler:
                 continue
             try:
                 start = datetime.time(*[int(x) for x in parts[0].split(":")])
-                end = datetime.time(*[int(x) for x in parts[1].split(":")])
+                end   = datetime.time(*[int(x) for x in parts[1].split(":")])
                 if start <= current <= end:
                     return True
             except ValueError:
@@ -186,7 +190,6 @@ class StockScheduler:
         return False
 
     def _save_result(self, result):
-        """将决策结果追加保存为 JSONL 日志"""
         try:
             log_dir = "logs"
             os.makedirs(log_dir, exist_ok=True)
@@ -198,7 +201,6 @@ class StockScheduler:
             logger.warning(f"保存决策结果失败: {e}")
 
     def _alert(self, result):
-        """强信号报警"""
         msg = f"🔔 强信号！{result.symbol} {result.stock_name} → {result.final_decision}  价格：{result.price:.3f}"
         logger.warning(msg)
 
@@ -209,4 +211,4 @@ class StockScheduler:
                     winsound.Beep(1000, 500)
                     time.sleep(0.3)
             except Exception:
-                pass  # 非 Windows 或 winsound 不可用，静默忽略
+                pass
